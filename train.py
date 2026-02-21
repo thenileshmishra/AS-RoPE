@@ -96,6 +96,7 @@ def main():
         n_layers=6,
         n_heads=8,
         max_seq_len=args.max_seq_len,
+        use_as_rope=args.use_as_rope,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
