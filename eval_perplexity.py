@@ -134,6 +134,7 @@ def main() -> None:
         n_layers=int(config.get("n_layers", 6)),
         n_heads=int(config.get("n_heads", 8)),
         max_seq_len=max(int(config.get("max_seq_len", 1024)), max(context_lengths), args.extend_to),
+        use_as_rope=bool(config.get("use_as_rope", False)),
     ).to(args.device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
