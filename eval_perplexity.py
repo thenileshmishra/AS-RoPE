@@ -56,6 +56,7 @@ def perplexity_sliding_no_double_count(
     data: torch.Tensor,
     context_len: int,
     device: str,
+    max_seq_len: int,
 ) -> float:
     model.eval()
 
@@ -69,6 +70,11 @@ def perplexity_sliding_no_double_count(
     for i in range(0, seq_len - 1, context_len):
         begin = max(i - context_len, 0)
         end = min(i + context_len, seq_len - 1)
+        
+        # Clamp window size to model's max_seq_len
+        if end - begin > max_seq_len:
+            end = begin + max_seq_len
+        
         target_len = end - i
         if target_len <= 0:
             continue
@@ -145,6 +151,7 @@ def main() -> None:
             data=data,
             context_len=context_len,
             device=args.device,
+            max_seq_len=model.max_seq_len,
         )
         per_context[context_len] = ppl
         print(f"context={context_len} ppl={ppl:.6f}")
@@ -164,6 +171,7 @@ def main() -> None:
                         data=data,
                         context_len=context_len,
                         device=args.device,
+                        max_seq_len=model.max_seq_len,
                     )
                     per_context[context_len] = ppl
                     print(f"context={context_len} ppl={ppl:.6f}")
