@@ -4,11 +4,12 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from as_rope import ASRotaryEmbedding
 from rope import RotaryEmbedding
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, max_seq_len: int):
+    def __init__(self, d_model: int, n_heads: int, max_seq_len: int, use_as_rope: bool = False):
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError(f"d_model={d_model} must be divisible by n_heads={n_heads}")
@@ -22,9 +23,18 @@ class CausalSelfAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
-        self.rope = RotaryEmbedding(head_dim=self.head_dim, max_seq_len=max_seq_len)
+        self.use_as_rope = use_as_rope
+        if self.use_as_rope:
+            self.rope = ASRotaryEmbedding(
+                d_model=d_model,
+                n_heads=n_heads,
+                head_dim=self.head_dim,
+                max_seq_len=max_seq_len,
+            )
+        else:
+            self.rope = RotaryEmbedding(head_dim=self.head_dim, max_seq_len=max_seq_len)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, freq_gates: torch.Tensor | None = None) -> torch.Tensor:
         # x: [B, T, C]
         bsz, seq_len, _ = x.shape
 
@@ -35,7 +45,12 @@ class CausalSelfAttention(nn.Module):
         v = self.v_proj(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
 
         # Apply rotary position embedding to Q and K.
-        q, k = self.rope(q, k)
+        if self.use_as_rope:
+            if freq_gates is None:
+                raise ValueError("freq_gates is required when use_as_rope=True")
+            q, k = self.rope(q, k, freq_gates)
+        else:
+            q, k = self.rope(q, k)
 
         # Scaled dot-product causal attention.
         # Scores: [B, H, T, T]
@@ -56,10 +71,17 @@ class CausalSelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, mlp_ratio: int, max_seq_len: int):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        mlp_ratio: int,
+        max_seq_len: int,
+        use_as_rope: bool = False,
+    ):
         super().__init__()
         self.ln1 = nn.LayerNorm(d_model)
-        self.attn = CausalSelfAttention(d_model, n_heads, max_seq_len)
+        self.attn = CausalSelfAttention(d_model, n_heads, max_seq_len, use_as_rope=use_as_rope)
         self.ln2 = nn.LayerNorm(d_model)
 
         hidden_dim = d_model * mlp_ratio
@@ -69,8 +91,8 @@ class TransformerBlock(nn.Module):
             nn.Linear(hidden_dim, d_model),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.ln1(x))
+    def forward(self, x: torch.Tensor, freq_gates: torch.Tensor | None = None) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x), freq_gates=freq_gates)
         x = x + self.mlp(self.ln2(x))
         return x
 
@@ -84,12 +106,18 @@ class GPT(nn.Module):
         n_heads: int = 8,
         max_seq_len: int = 1024,
         mlp_ratio: int = 4,
+        use_as_rope: bool = False,
     ):
         super().__init__()
 
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.max_seq_len = max_seq_len
+        self.use_as_rope = use_as_rope
+
+        self.freq_gates = None
+        if self.use_as_rope:
+            self.freq_gates = nn.Parameter(torch.ones(d_model // 2))
 
         self.token_emb = nn.Embedding(vocab_size, d_model)
         self.blocks = nn.ModuleList(
@@ -99,6 +127,7 @@ class GPT(nn.Module):
                     n_heads=n_heads,
                     mlp_ratio=mlp_ratio,
                     max_seq_len=max_seq_len,
+                    use_as_rope=use_as_rope,
                 )
                 for _ in range(n_layers)
             ]
@@ -131,7 +160,7 @@ class GPT(nn.Module):
 
         # Decoder stack.
         for block in self.blocks:
-            x = block(x)
+            x = block(x, freq_gates=self.freq_gates)
 
         # Final normalization and vocabulary projection.
         x = self.final_ln(x)
