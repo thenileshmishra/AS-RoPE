@@ -11,7 +11,7 @@ from model import GPT
 
 GPT2_VOCAB_URL = "https://huggingface.co/gpt2/resolve/main/vocab.json"
 GPT2_MERGES_URL = "https://huggingface.co/gpt2/resolve/main/merges.txt"
-TINY_SHAKESPEARE_URL = "https://huggingface.co/datasets/karpathy/tiny_shakespeare/resolve/main/tiny_shakespeare.txt"
+TINY_SHAKESPEARE_URL = "https://huggingface.co/datasets/TokenBender/tinyshakespeare/resolve/main/tinyshakespeare.txt"
 
 
 def parse_context_lengths(value: str) -> list[int]:
