@@ -1,21 +1,25 @@
 import argparse
 import time
 from pathlib import Path
+from urllib.request import urlretrieve
 
 import torch
-from datasets import load_dataset
 from tokenizers import ByteLevelBPETokenizer
-from urllib.request import urlretrieve
 
 from model import GPT
 
 GPT2_VOCAB_URL = "https://huggingface.co/gpt2/resolve/main/vocab.json"
 GPT2_MERGES_URL = "https://huggingface.co/gpt2/resolve/main/merges.txt"
+TINY_SHAKESPEARE_URL = "https://huggingface.co/datasets/karpathy/tiny_shakespeare/resolve/main/tiny_shakespeare.txt"
 
 
-def load_wikitext103_train(root: str) -> str:
-    dataset = load_dataset("wikitext", "wikitext-103-v1", split="train", cache_dir=root)
-    return "\n".join(dataset["text"])
+def load_tiny_shakespeare_text(cache_dir: str) -> str:
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
+    tiny_path = cache_path / "tiny_shakespeare.txt"
+    if not tiny_path.exists():
+        urlretrieve(TINY_SHAKESPEARE_URL, tiny_path)
+    return tiny_path.read_text(encoding="utf-8")
 
 
 def build_gpt2_bpe(cache_dir: str) -> ByteLevelBPETokenizer:
@@ -61,7 +65,6 @@ def main():
     parser.add_argument("--max_seq_len", type=int, default=4096)
     parser.add_argument("--save_interval", type=int, default=500)
     parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pt")
-    parser.add_argument("--use_wikitext", action="store_true")
     parser.add_argument("--data_root", type=str, default=".data")
     parser.add_argument("--tokenizer_cache", type=str, default=".cache/gpt2")
     parser.add_argument("--max_tokens", type=int, default=0)
@@ -75,19 +78,13 @@ def main():
     if args.block_size > args.max_seq_len:
         raise ValueError("block_size must be <= max_seq_len")
 
-    if args.use_wikitext:
-        tokenizer = build_gpt2_bpe(args.tokenizer_cache)
-        text = load_wikitext103_train(args.data_root)
-        token_ids = tokenizer.encode(text).ids
-        if args.max_tokens > 0:
-            token_ids = token_ids[: args.max_tokens]
-        args.vocab_size = tokenizer.get_vocab_size()
-        data = torch.tensor(token_ids, device=device, dtype=torch.long)
-    else:
-        # Dummy deterministic token stream for a runnable minimal training loop.
-        # Replace with your own tokenized corpus for real research runs.
-        data_len = 200_000
-        data = (torch.arange(data_len, device=device, dtype=torch.long) % args.vocab_size).long()
+    tokenizer = build_gpt2_bpe(args.tokenizer_cache)
+    text = load_tiny_shakespeare_text(args.data_root)
+    token_ids = tokenizer.encode(text).ids
+    if args.max_tokens > 0:
+        token_ids = token_ids[: args.max_tokens]
+    args.vocab_size = tokenizer.get_vocab_size()
+    data = torch.tensor(token_ids, device=device, dtype=torch.long)
 
     model = GPT(
         vocab_size=args.vocab_size,
