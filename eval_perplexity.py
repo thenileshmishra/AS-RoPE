@@ -128,7 +128,7 @@ def main() -> None:
 
     checkpoint = torch.load(args.checkpoint_path, map_location=args.device)
     config = checkpoint.get("config", {})
-    vocab_size = int(config.get("vocab_size", tokenizer.get_vocab_size()))
+    vocab_size = int(config.get("vocab_size", tokenizer.vocab_size))
 
     if int(data.max().item()) >= vocab_size:
         raise ValueError(
