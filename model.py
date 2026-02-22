@@ -6,13 +6,23 @@ import torch.nn.functional as F
 
 from as_rope import ASRotaryEmbedding
 from rope import RotaryEmbedding
+from scaled_rope import ScaledRotaryEmbedding
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, max_seq_len: int, use_as_rope: bool = False):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        max_seq_len: int,
+        use_as_rope: bool = False,
+        use_scaled_rope: bool = False,
+    ):
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError(f"d_model={d_model} must be divisible by n_heads={n_heads}")
+        if use_as_rope and use_scaled_rope:
+            raise ValueError("use_as_rope and use_scaled_rope cannot both be True")
 
         self.d_model = d_model
         self.n_heads = n_heads
@@ -24,6 +34,7 @@ class CausalSelfAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
         self.use_as_rope = use_as_rope
+        self.use_scaled_rope = use_scaled_rope
         if self.use_as_rope:
             self.rope = ASRotaryEmbedding(
                 d_model=d_model,
@@ -31,10 +42,17 @@ class CausalSelfAttention(nn.Module):
                 head_dim=self.head_dim,
                 max_seq_len=max_seq_len,
             )
+        elif self.use_scaled_rope:
+            self.rope = ScaledRotaryEmbedding(head_dim=self.head_dim, max_seq_len=max_seq_len)
         else:
             self.rope = RotaryEmbedding(head_dim=self.head_dim, max_seq_len=max_seq_len)
 
-    def forward(self, x: torch.Tensor, freq_gates: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        freq_gates: torch.Tensor | None = None,
+        gamma: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         # x: [B, T, C]
         bsz, seq_len, _ = x.shape
 
@@ -49,6 +67,10 @@ class CausalSelfAttention(nn.Module):
             if freq_gates is None:
                 raise ValueError("freq_gates is required when use_as_rope=True")
             q, k = self.rope(q, k, freq_gates)
+        elif self.use_scaled_rope:
+            if gamma is None:
+                raise ValueError("gamma is required when use_scaled_rope=True")
+            q, k = self.rope(q, k, gamma)
         else:
             q, k = self.rope(q, k)
 
@@ -78,10 +100,17 @@ class TransformerBlock(nn.Module):
         mlp_ratio: int,
         max_seq_len: int,
         use_as_rope: bool = False,
+        use_scaled_rope: bool = False,
     ):
         super().__init__()
         self.ln1 = nn.LayerNorm(d_model)
-        self.attn = CausalSelfAttention(d_model, n_heads, max_seq_len, use_as_rope=use_as_rope)
+        self.attn = CausalSelfAttention(
+            d_model,
+            n_heads,
+            max_seq_len,
+            use_as_rope=use_as_rope,
+            use_scaled_rope=use_scaled_rope,
+        )
         self.ln2 = nn.LayerNorm(d_model)
 
         hidden_dim = d_model * mlp_ratio
@@ -91,8 +120,13 @@ class TransformerBlock(nn.Module):
             nn.Linear(hidden_dim, d_model),
         )
 
-    def forward(self, x: torch.Tensor, freq_gates: torch.Tensor | None = None) -> torch.Tensor:
-        x = x + self.attn(self.ln1(x), freq_gates=freq_gates)
+    def forward(
+        self,
+        x: torch.Tensor,
+        freq_gates: torch.Tensor | None = None,
+        gamma: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x), freq_gates=freq_gates, gamma=gamma)
         x = x + self.mlp(self.ln2(x))
         return x
 
@@ -107,6 +141,7 @@ class GPT(nn.Module):
         max_seq_len: int = 1024,
         mlp_ratio: int = 4,
         use_as_rope: bool = False,
+        use_scaled_rope: bool = False,
     ):
         super().__init__()
 
@@ -114,10 +149,17 @@ class GPT(nn.Module):
         self.d_model = d_model
         self.max_seq_len = max_seq_len
         self.use_as_rope = use_as_rope
+        self.use_scaled_rope = use_scaled_rope
+        if self.use_as_rope and self.use_scaled_rope:
+            raise ValueError("use_as_rope and use_scaled_rope cannot both be True")
 
         self.freq_gates = None
         if self.use_as_rope:
             self.freq_gates = nn.Parameter(torch.ones(d_model // 2))
+
+        self.gamma = None
+        if self.use_scaled_rope:
+            self.gamma = nn.Parameter(torch.tensor(1.0))
 
         self.token_emb = nn.Embedding(vocab_size, d_model)
         self.blocks = nn.ModuleList(
@@ -128,6 +170,7 @@ class GPT(nn.Module):
                     mlp_ratio=mlp_ratio,
                     max_seq_len=max_seq_len,
                     use_as_rope=use_as_rope,
+                    use_scaled_rope=use_scaled_rope,
                 )
                 for _ in range(n_layers)
             ]
@@ -160,7 +203,7 @@ class GPT(nn.Module):
 
         # Decoder stack.
         for block in self.blocks:
-            x = block(x, freq_gates=self.freq_gates)
+            x = block(x, freq_gates=self.freq_gates, gamma=self.gamma)
 
         # Final normalization and vocabulary projection.
         x = self.final_ln(x)

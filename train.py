@@ -95,6 +95,7 @@ def main():
     parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pt")
     parser.add_argument("--metrics_path", type=str, default="")
     parser.add_argument("--use_as_rope", action="store_true")
+    parser.add_argument("--use_scaled_rope", action="store_true")
     parser.add_argument("--data_cache", type=str, default=".cache/wikitext2_gpt2")
     parser.add_argument("--tokenizer_cache", type=str, default=".cache/hf_tokenizer")
     parser.add_argument("--seed", type=int, default=42)
@@ -117,6 +118,7 @@ def main():
         n_heads=8,
         max_seq_len=args.context_length,
         use_as_rope=args.use_as_rope,
+        use_scaled_rope=args.use_scaled_rope,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -128,6 +130,7 @@ def main():
     print(f"Training on {device}")
     print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     print(f"use_as_rope={args.use_as_rope}")
+    print(f"use_scaled_rope={args.use_scaled_rope}")
 
     start = time.time()
     train_losses: list[float] = []
@@ -162,6 +165,9 @@ def main():
                 f"min {gates.min().item():.6f} | max {gates.max().item():.6f}"
             )
 
+        if args.use_scaled_rope and model.gamma is not None and step % args.freq_stats_interval == 0:
+            print(f"gamma step {step:5d} | value {model.gamma.detach().item():.6f}")
+
         if step % args.save_interval == 0 or step == args.max_steps:
             checkpoint = {
                 "step": step,
@@ -175,6 +181,7 @@ def main():
                     "n_heads": 8,
                     "max_seq_len": args.context_length,
                     "use_as_rope": bool(args.use_as_rope),
+                    "use_scaled_rope": bool(args.use_scaled_rope),
                 },
             }
             torch.save(checkpoint, args.checkpoint_path)
