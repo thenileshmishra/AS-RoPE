@@ -28,19 +28,10 @@ def parse_context_lengths(value: str) -> list[int]:
     return sorted(set(lengths))
 
 
-def build_gpt2_tokenizer(cache_dir: str) -> ByteLevelBPETokenizer:
-    cache_path = Path(cache_dir)
-    cache_path.mkdir(parents=True, exist_ok=True)
-
-    vocab_path = cache_path / "vocab.json"
-    merges_path = cache_path / "merges.txt"
-    if not vocab_path.exists():
-        download_file(GPT2_VOCAB_URL, vocab_path)
-    if not merges_path.exists():
 def get_tokenizer(cache_dir: str) -> GPT2TokenizerFast:
     token = _hf_token()
-
-    return ByteLevelBPETokenizer(str(vocab_path), str(merges_path))
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
     return GPT2TokenizerFast.from_pretrained("gpt2", token=token, cache_dir=str(cache_path))
 
 
@@ -109,7 +100,6 @@ def perplexity_sliding_window(
         total_tokens += int(target_len)
 
     return math.exp(total_nll / total_tokens)
-    return math.exp(total_nll / total_tokens)
 
 
 def main() -> None:
@@ -157,7 +147,6 @@ def main() -> None:
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    per_context: dict[int, float] = {}
     for context_len in context_lengths:
         ppl = perplexity_sliding_window(
             model=model,
@@ -165,7 +154,6 @@ def main() -> None:
             context_len=context_len,
             device=args.device,
         )
-        per_context[context_len] = ppl
         print(f"context={context_len} ppl={ppl:.6f}")
 
 
