@@ -1,4 +1,5 @@
 import argparse
+import csv
 import time
 from pathlib import Path
 
@@ -102,6 +103,11 @@ def train(args: argparse.Namespace) -> None:
     last_train_loss = 0.0
     ckpt_path = Path(args.checkpoint_path)
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path = Path(args.metrics_path)
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with metrics_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "step", "train_loss", "acc512", "best_acc512"])
 
     while step < args.max_steps:
         epoch += 1
@@ -147,6 +153,9 @@ def train(args: argparse.Namespace) -> None:
             f"epoch={epoch:4d} step={step:6d} train_loss={epoch_train_loss:.6f} "
             f"acc512={acc_512:.4f} best_acc512={best_acc_512:.4f} elapsed={elapsed:.1f}s"
         )
+        with metrics_path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, step, f"{epoch_train_loss:.6f}", f"{acc_512:.6f}", f"{best_acc_512:.6f}"])
 
         if acc_512 > best_acc_512:
             best_acc_512 = acc_512
@@ -184,6 +193,7 @@ def train(args: argparse.Namespace) -> None:
         f"training_done step={step} max_steps={args.max_steps} "
         f"best_acc512={best_acc_512:.4f} last_train_loss={last_train_loss:.6f}"
     )
+    print(f"metrics_saved={metrics_path.resolve()}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -205,6 +215,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target_acc_512", type=float, default=0.99)
     parser.add_argument("--log_interval", type=int, default=50)
     parser.add_argument("--checkpoint_path", type=str, default="checkpoint_ldr.pt")
+    parser.add_argument("--metrics_path", type=str, default="logs/ldr_metrics.csv")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--use_as_rope", action="store_true")
