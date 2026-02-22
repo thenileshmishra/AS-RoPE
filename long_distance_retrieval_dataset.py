@@ -17,25 +17,25 @@ class LongDistanceRetrievalDataset(Dataset):
         self.random_low = 1
         self.random_high_exclusive = 121
 
+    def _sample_tokens_excluding_v(self, v: int, size: tuple[int, ...]) -> torch.Tensor:
+        base = torch.randint(1, 120, size=size, dtype=torch.long)
+        return base + (base >= v).long()
+
     def __len__(self):
         return self.num_samples
 
     def __getitem__(self, idx):
-        input_ids = torch.randint(
-            low=self.random_low,
-            high=self.random_high_exclusive,
-            size=(self.seq_len,),
-            dtype=torch.long,
-        )
-
-        first_half_end = max(1, self.seq_len // 2)
-        needle_pos = torch.randint(0, first_half_end, (1,), dtype=torch.long).item()
         value_token = torch.randint(
             low=self.random_low,
             high=self.random_high_exclusive,
             size=(1,),
             dtype=torch.long,
         ).item()
+
+        input_ids = self._sample_tokens_excluding_v(value_token, (self.seq_len,))
+
+        first_half_end = max(1, self.seq_len // 2)
+        needle_pos = torch.randint(0, first_half_end, (1,), dtype=torch.long).item()
 
         input_ids[needle_pos] = self.NEEDLE_ID
         input_ids[needle_pos + 1] = value_token
