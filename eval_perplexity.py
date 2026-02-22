@@ -66,42 +66,51 @@ def perplexity_sliding_window(
     device: str,
     max_seq_len: int,
 ) -> float:
+    """
+    Compute perplexity with exact-once token prediction.
+
+    - Non-overlapping windows
+    - No padding tokens
+    - Accumulates total negative log-likelihood (sum reduction)
+    - Returns exp(total_nll / total_tokens)
+    """
     model.eval()
 
     seq_len = data.size(0)
     if seq_len < 2:
         raise ValueError("Not enough tokens to evaluate perplexity.")
+    if context_len <= 0:
+        raise ValueError("context_len must be > 0.")
 
     total_nll = 0.0
     total_tokens = 0
 
-    for i in range(0, seq_len - 1, context_len):
-        begin = max(i - context_len, 0)
-        end = min(i + context_len, seq_len - 1)
+    # Respect model capacity while handling arbitrary requested context length.
+    window_len = min(context_len, max_seq_len)
 
-        if end - begin > max_seq_len:
-            end = begin + max_seq_len
-
-        target_len = end - i
-        if target_len <= 0:
+    # Predict token positions 1..(seq_len-1), exactly once each.
+    # Chunk boundaries are contiguous and non-overlapping in input space.
+    for start in range(0, seq_len - 1, window_len):
+        end = min(start + window_len, seq_len - 1)
+        chunk_len = end - start
+        if chunk_len <= 0:
             continue
 
-        input_ids = data[begin:end].unsqueeze(0).to(device)
-        labels = data[begin + 1 : end + 1].unsqueeze(0).to(device)
-
-        if labels.size(1) > target_len:
-            labels[:, : labels.size(1) - target_len] = -100
+        input_ids = data[start:end].unsqueeze(0).to(device)
+        labels = data[start + 1 : end + 1].unsqueeze(0).to(device)
 
         logits, _ = model(input_ids)
         loss = F.cross_entropy(
             logits.view(-1, logits.size(-1)),
             labels.view(-1),
-            ignore_index=-100,
             reduction="sum",
         )
 
         total_nll += float(loss.item())
-        total_tokens += int(target_len)
+        total_tokens += int(chunk_len)
+
+    if total_tokens == 0:
+        raise ValueError("No tokens were evaluated. Check context length and input size.")
 
     return math.exp(total_nll / total_tokens)
 
