@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import math
 import os
 import time
@@ -9,7 +10,7 @@ import torch
 from datasets import load_dataset
 from transformers import GPT2TokenizerFast
 
-from model import GPT
+from src.model import GPT
 
 
 def _hf_token() -> str | None:
@@ -81,6 +82,161 @@ def cosine_with_warmup_lambda(current_step: int, warmup_steps: int, total_steps:
     return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
 
+def parse_seeds(seed: int, seeds: str) -> list[int]:
+    if not seeds.strip():
+        return [seed]
+    parsed = [int(part.strip()) for part in seeds.split(",") if part.strip()]
+    if not parsed:
+        return [seed]
+    return parsed
+
+
+def run_single_seed(
+    args: argparse.Namespace,
+    seed: int,
+    tokenizer: GPT2TokenizerFast,
+    train_data: torch.Tensor,
+    val_data: torch.Tensor,
+) -> dict:
+    torch.manual_seed(seed)
+    device = args.device
+
+    model = GPT(
+        vocab_size=tokenizer.vocab_size,
+        d_model=256,
+        n_layers=4,
+        n_heads=8,
+        max_seq_len=args.context_length,
+        positional_encoding=args.positional_encoding,
+        as_rope_per_layer_gates=args.as_rope_per_layer_gates,
+        allow_negative_gates=args.allow_negative_gates,
+    ).to(device)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lambda step: cosine_with_warmup_lambda(step, args.warmup_steps, args.max_steps),
+    )
+
+    run_dir = Path(args.output_dir) / args.positional_encoding / f"seed_{seed}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = run_dir / "checkpoint.pt"
+    metrics_json_path = run_dir / "metrics.json"
+
+    print(f"\n--- Seed run start | positional_encoding={args.positional_encoding} | seed={seed} ---")
+    print(f"Training on {device}")
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    if args.positional_encoding == "as_rope":
+        print(
+            f"as_rope_per_layer_gates={args.as_rope_per_layer_gates} "
+            f"allow_negative_gates={args.allow_negative_gates}"
+        )
+
+    start = time.time()
+    train_losses: list[float] = []
+    metrics_rows: list[dict[str, float | int]] = []
+
+    for step in range(1, args.max_steps + 1):
+        x, y = get_batch(train_data, args.batch_size, args.context_length, device)
+
+        optimizer.zero_grad(set_to_none=True)
+        _, loss = model(x, y)
+
+        if not torch.isfinite(loss):
+            raise RuntimeError(f"Non-finite loss detected at step {step}: {loss.item()}")
+
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+        train_losses.append(float(loss.item()))
+
+        if step % args.log_interval == 0 or step == 1:
+            elapsed = time.time() - start
+            current_lr = float(optimizer.param_groups[0]["lr"])
+            print(
+                f"step {step:5d} | train_loss {loss.item():.4f} | "
+                f"lr {current_lr:.6e} | {elapsed:.1f}s"
+            )
+            metrics_rows.append(
+                {
+                    "step": int(step),
+                    "train_loss": float(loss.item()),
+                    "lr": current_lr,
+                }
+            )
+
+        if args.positional_encoding == "as_rope" and model.freq_gates is not None and step % args.freq_stats_interval == 0:
+            gates = model.freq_gates.detach()
+            print(
+                f"freq_gates step {step:5d} | mean {gates.mean().item():.6f} | std {gates.std(unbiased=False).item():.6f} | "
+                f"min {gates.min().item():.6f} | max {gates.max().item():.6f}"
+            )
+
+        if args.positional_encoding == "scaled_rope" and model.gamma is not None and step % args.freq_stats_interval == 0:
+            print(f"gamma step {step:5d} | value {model.gamma.detach().item():.6f}")
+
+        if step % args.save_interval == 0 or step == args.max_steps:
+            checkpoint = {
+                "step": step,
+                "seed": seed,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "config": {
+                    "vocab_size": tokenizer.vocab_size,
+                    "d_model": 256,
+                    "n_layers": 4,
+                    "n_heads": 8,
+                    "max_seq_len": args.context_length,
+                    "positional_encoding": args.positional_encoding,
+                    "use_as_rope": args.positional_encoding == "as_rope",
+                    "use_scaled_rope": args.positional_encoding == "scaled_rope",
+                    "as_rope_per_layer_gates": bool(args.as_rope_per_layer_gates),
+                    "allow_negative_gates": bool(args.allow_negative_gates),
+                },
+            }
+            torch.save(checkpoint, checkpoint_path)
+
+    training_loss_decreasing = None
+    start_avg = None
+    end_avg = None
+    if len(train_losses) >= 20:
+        start_avg = sum(train_losses[:10]) / 10
+        end_avg = sum(train_losses[-10:]) / 10
+        training_loss_decreasing = bool(end_avg < start_avg)
+
+    run_summary = {
+        "seed": seed,
+        "positional_encoding": args.positional_encoding,
+        "device": str(device),
+        "max_steps": int(args.max_steps),
+        "batch_size": int(args.batch_size),
+        "context_length": int(args.context_length),
+        "checkpoint_path": str(checkpoint_path),
+        "metrics": metrics_rows,
+        "final_train_loss": float(train_losses[-1]) if train_losses else None,
+        "training_loss_decreasing": training_loss_decreasing,
+        "start_avg_loss": start_avg,
+        "end_avg_loss": end_avg,
+        "val_tokens": int(val_data.numel()),
+    }
+
+    with metrics_json_path.open("w", encoding="utf-8") as f:
+        json.dump(run_summary, f, indent=2)
+
+    if args.metrics_path:
+        metrics_path = Path(args.metrics_path)
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        with metrics_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["step", "train_loss", "lr"])
+            writer.writerows([(m["step"], m["train_loss"], m["lr"]) for m in metrics_rows])
+        print(f"Metrics saved: {metrics_path.resolve()}")
+
+    print(f"Seed {seed} outputs saved to: {run_dir.resolve()}")
+    return run_summary
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=32)
@@ -102,9 +258,13 @@ def main():
     )
     parser.add_argument("--use_as_rope", action="store_true")
     parser.add_argument("--use_scaled_rope", action="store_true")
+    parser.add_argument("--as_rope_per_layer_gates", action="store_true")
+    parser.add_argument("--allow_negative_gates", action="store_true")
     parser.add_argument("--data_cache", type=str, default=".cache/wikitext2_gpt2")
     parser.add_argument("--tokenizer_cache", type=str, default=".cache/hf_tokenizer")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seeds", type=str, default="")
+    parser.add_argument("--output_dir", type=str, default="results/train_runs")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -115,7 +275,7 @@ def main():
     elif args.use_scaled_rope:
         args.positional_encoding = "scaled_rope"
 
-    torch.manual_seed(args.seed)
+    seeds = parse_seeds(args.seed, args.seeds)
     device = args.device
 
     tokenizer = get_tokenizer(args.tokenizer_cache)
@@ -124,97 +284,32 @@ def main():
     if train_data.numel() <= args.context_length + 1:
         raise ValueError("Training token stream is too short for the selected context_length.")
 
-    model = GPT(
-        vocab_size=tokenizer.vocab_size,
-        d_model=256,
-        n_layers=4,
-        n_heads=8,
-        max_seq_len=args.context_length,
-        positional_encoding=args.positional_encoding,
-    ).to(device)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer,
-        lr_lambda=lambda step: cosine_with_warmup_lambda(step, args.warmup_steps, args.max_steps),
-    )
-
-    print(f"Training on {device}")
-    print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     print(f"positional_encoding={args.positional_encoding}")
+    print(f"seeds={seeds}")
 
-    start = time.time()
-    train_losses: list[float] = []
-    metrics_rows: list[tuple[int, float, float]] = []
+    all_seed_metrics: dict[str, dict] = {}
+    for seed in seeds:
+        all_seed_metrics[str(seed)] = run_single_seed(
+            args=args,
+            seed=seed,
+            tokenizer=tokenizer,
+            train_data=train_data,
+            val_data=val_data,
+        )
 
-    for step in range(1, args.max_steps + 1):
-        x, y = get_batch(train_data, args.batch_size, args.context_length, device)
-
-        optimizer.zero_grad(set_to_none=True)
-        _, loss = model(x, y)
-
-        if not torch.isfinite(loss):
-            raise RuntimeError(f"Non-finite loss detected at step {step}: {loss.item()}")
-
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-        train_losses.append(float(loss.item()))
-
-        if step % args.log_interval == 0 or step == 1:
-            elapsed = time.time() - start
-            print(
-                f"step {step:5d} | train_loss {loss.item():.4f} | "
-                f"lr {optimizer.param_groups[0]['lr']:.6e} | {elapsed:.1f}s"
-            )
-            metrics_rows.append((step, float(loss.item()), float(optimizer.param_groups[0]["lr"])))
-
-        if args.positional_encoding == "as_rope" and model.freq_gates is not None and step % args.freq_stats_interval == 0:
-            gates = model.freq_gates.detach()
-            print(
-                f"freq_gates step {step:5d} | mean {gates.mean().item():.6f} | std {gates.std(unbiased=False).item():.6f} | "
-                f"min {gates.min().item():.6f} | max {gates.max().item():.6f}"
-            )
-
-        if args.positional_encoding == "scaled_rope" and model.gamma is not None and step % args.freq_stats_interval == 0:
-            print(f"gamma step {step:5d} | value {model.gamma.detach().item():.6f}")
-
-        if step % args.save_interval == 0 or step == args.max_steps:
-            checkpoint = {
-                "step": step,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict(),
-                "config": {
-                    "vocab_size": tokenizer.vocab_size,
-                    "d_model": 256,
-                    "n_layers": 4,
-                    "n_heads": 8,
-                    "max_seq_len": args.context_length,
-                    "positional_encoding": args.positional_encoding,
-                    "use_as_rope": args.positional_encoding == "as_rope",
-                    "use_scaled_rope": args.positional_encoding == "scaled_rope",
-                },
-            }
-            torch.save(checkpoint, args.checkpoint_path)
-            print(f"Checkpoint saved: {Path(args.checkpoint_path).resolve()}")
-
-    if args.metrics_path:
-        metrics_path = Path(args.metrics_path)
-        metrics_path.parent.mkdir(parents=True, exist_ok=True)
-        with metrics_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["step", "train_loss", "lr"])
-            writer.writerows(metrics_rows)
-        print(f"Metrics saved: {metrics_path.resolve()}")
-
-    if val_data.numel() > args.context_length + 1:
-        print(f"Validation token stream prepared: {val_data.numel()} tokens")
-
-    if len(train_losses) >= 20:
-        head = sum(train_losses[:10]) / 10
-        tail = sum(train_losses[-10:]) / 10
-        print(f"Training loss decreasing: {tail < head} (start_avg={head:.4f}, end_avg={tail:.4f})")
+    aggregate_path = Path(args.output_dir) / args.positional_encoding / "all_seeds_metrics.json"
+    aggregate_path.parent.mkdir(parents=True, exist_ok=True)
+    with aggregate_path.open("w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "positional_encoding": args.positional_encoding,
+                "seeds": seeds,
+                "runs": all_seed_metrics,
+            },
+            f,
+            indent=2,
+        )
+    print(f"All-seed metrics saved: {aggregate_path.resolve()}")
 
 
 if __name__ == "__main__":

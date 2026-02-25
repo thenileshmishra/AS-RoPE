@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 
 class ASRotaryEmbedding(nn.Module):
@@ -11,7 +12,15 @@ class ASRotaryEmbedding(nn.Module):
         theta = position * base_freqs * freq_gates
     """
 
-    def __init__(self, d_model: int, n_heads: int, head_dim: int, max_seq_len: int, base: float = 10000.0):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        head_dim: int,
+        max_seq_len: int,
+        base: float = 10000.0,
+        allow_negative_gates: bool = False,
+    ):
         super().__init__()
         if head_dim % 2 != 0:
             raise ValueError(f"head_dim must be even for RoPE, got {head_dim}")
@@ -24,6 +33,7 @@ class ASRotaryEmbedding(nn.Module):
         self.n_heads = n_heads
         self.head_dim = head_dim
         self.max_seq_len = max_seq_len
+        self.allow_negative_gates = allow_negative_gates
 
         inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
         positions = torch.arange(max_seq_len).float()
@@ -42,6 +52,8 @@ class ASRotaryEmbedding(nn.Module):
             )
 
         gates = freq_gates.view(self.n_heads, self.head_dim // 2).to(device=device, dtype=torch.float32)
+        if not self.allow_negative_gates:
+            gates = F.softplus(gates)
         pos = self.positions[:seq_len].to(device=device, dtype=torch.float32)
         base = self.base_freqs.to(device=device, dtype=torch.float32)
 

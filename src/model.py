@@ -1,14 +1,16 @@
+from __future__ import annotations
+
 import math
 
 import torch
 from torch import nn
 import torch.nn.functional as F
 
-from positional_encodings.alibi import ALiBiBias
-from positional_encodings.as_rope import ASRotaryEmbedding
-from positional_encodings.ntk_scaled_rope import NTKScaledRotaryEmbedding
-from positional_encodings.rope import RotaryEmbedding
-from positional_encodings.scaled_rope import ScaledRotaryEmbedding
+from src.positional_encodings.alibi import ALiBiBias
+from src.positional_encodings.as_rope import ASRotaryEmbedding
+from src.positional_encodings.ntk_scaled_rope import NTKScaledRotaryEmbedding
+from src.positional_encodings.rope import RotaryEmbedding
+from src.positional_encodings.scaled_rope import ScaledRotaryEmbedding
 
 
 class CausalSelfAttention(nn.Module):
@@ -20,6 +22,7 @@ class CausalSelfAttention(nn.Module):
         positional_encoding: str = "rope",
         use_as_rope: bool = False,
         use_scaled_rope: bool = False,
+        allow_negative_gates: bool = False,
     ):
         super().__init__()
         if d_model % n_heads != 0:
@@ -51,6 +54,7 @@ class CausalSelfAttention(nn.Module):
                 n_heads=n_heads,
                 head_dim=self.head_dim,
                 max_seq_len=max_seq_len,
+                allow_negative_gates=allow_negative_gates,
             )
         elif self.use_scaled_rope:
             self.rope = ScaledRotaryEmbedding(head_dim=self.head_dim, max_seq_len=max_seq_len)
@@ -119,6 +123,7 @@ class TransformerBlock(nn.Module):
         positional_encoding: str = "rope",
         use_as_rope: bool = False,
         use_scaled_rope: bool = False,
+        allow_negative_gates: bool = False,
     ):
         super().__init__()
         self.ln1 = nn.LayerNorm(d_model)
@@ -129,6 +134,7 @@ class TransformerBlock(nn.Module):
             positional_encoding=positional_encoding,
             use_as_rope=use_as_rope,
             use_scaled_rope=use_scaled_rope,
+            allow_negative_gates=allow_negative_gates,
         )
         self.ln2 = nn.LayerNorm(d_model)
 
@@ -162,6 +168,8 @@ class GPT(nn.Module):
         positional_encoding: str = "rope",
         use_as_rope: bool = False,
         use_scaled_rope: bool = False,
+        as_rope_per_layer_gates: bool = False,
+        allow_negative_gates: bool = False,
     ):
         super().__init__()
 
@@ -186,10 +194,15 @@ class GPT(nn.Module):
         self.use_scaled_rope = positional_encoding == "scaled_rope"
         self.use_alibi = positional_encoding == "alibi"
         self.use_ntk_scaled_rope = positional_encoding == "ntk_scaled_rope"
+        self.as_rope_per_layer_gates = as_rope_per_layer_gates
+        self.allow_negative_gates = allow_negative_gates
 
         self.freq_gates = None
         if self.use_as_rope:
-            self.freq_gates = nn.Parameter(torch.ones(d_model // 2))
+            if self.as_rope_per_layer_gates:
+                self.freq_gates = nn.Parameter(torch.ones(n_layers, d_model // 2))
+            else:
+                self.freq_gates = nn.Parameter(torch.ones(d_model // 2))
 
         self.gamma = None
         if self.use_scaled_rope:
@@ -206,6 +219,7 @@ class GPT(nn.Module):
                     positional_encoding=positional_encoding,
                     use_as_rope=use_as_rope,
                     use_scaled_rope=use_scaled_rope,
+                    allow_negative_gates=allow_negative_gates,
                 )
                 for _ in range(n_layers)
             ]
@@ -237,8 +251,11 @@ class GPT(nn.Module):
         x = self.token_emb(input_ids)  # [B, T, C]
 
         # Decoder stack.
-        for block in self.blocks:
-            x = block(x, freq_gates=self.freq_gates, gamma=self.gamma)
+        for layer_idx, block in enumerate(self.blocks):
+            layer_freq_gates = self.freq_gates
+            if self.use_as_rope and self.as_rope_per_layer_gates and self.freq_gates is not None:
+                layer_freq_gates = self.freq_gates[layer_idx]
+            x = block(x, freq_gates=layer_freq_gates, gamma=self.gamma)
 
         # Final normalization and vocabulary projection.
         x = self.final_ln(x)

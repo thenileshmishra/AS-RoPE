@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from model import GPT
+from src.model import GPT
 from data.long_distance_retrieval_dataset import LongDistanceRetrievalDataset
 
 
@@ -86,6 +86,8 @@ def train(args: argparse.Namespace) -> None:
         max_seq_len=args.model_max_seq_len,
         mlp_ratio=args.mlp_ratio,
         positional_encoding=args.positional_encoding,
+        as_rope_per_layer_gates=args.as_rope_per_layer_gates,
+        allow_negative_gates=args.allow_negative_gates,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -94,6 +96,11 @@ def train(args: argparse.Namespace) -> None:
     print(f"device={device}")
     print(f"params={sum(p.numel() for p in model.parameters()):,}")
     print(f"train_seq_len={args.train_seq_len} batch_size={args.batch_size}")
+    if args.positional_encoding == "as_rope":
+        print(
+            f"as_rope_per_layer_gates={args.as_rope_per_layer_gates} "
+            f"allow_negative_gates={args.allow_negative_gates}"
+        )
 
     start_time = time.time()
     step = 0
@@ -175,6 +182,8 @@ def train(args: argparse.Namespace) -> None:
                     "positional_encoding": args.positional_encoding,
                     "use_as_rope": args.positional_encoding == "as_rope",
                     "use_scaled_rope": args.positional_encoding == "scaled_rope",
+                    "as_rope_per_layer_gates": bool(args.as_rope_per_layer_gates),
+                    "allow_negative_gates": bool(args.allow_negative_gates),
                 },
                 "task": {
                     "needle_token_id": 126,
@@ -226,6 +235,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--use_as_rope", action="store_true")
     parser.add_argument("--use_scaled_rope", action="store_true")
+    parser.add_argument("--as_rope_per_layer_gates", action="store_true")
+    parser.add_argument("--allow_negative_gates", action="store_true")
     args = parser.parse_args()
     if args.use_as_rope and args.use_scaled_rope:
         raise ValueError("--use_as_rope and --use_scaled_rope cannot both be set")
