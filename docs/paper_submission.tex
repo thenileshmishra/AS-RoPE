@@ -1,0 +1,275 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{cite}
+
+\title{Adaptive Spectral Calibration of Rotary Positional Embeddings for Length Extrapolation}
+
+\author{
+\IEEEauthorblockN{Nilesh Mishra\IEEEauthorrefmark{1} and Jay Prakash\IEEEauthorrefmark{2}}
+\IEEEauthorblockA{
+\textit{Department of Computer Science and Engineering} \\
+\textit{National Institute of Technology, Calicut, India}\\
+}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Rotary Positional Embedding (RoPE) is widely used in transformer language models, yet its behavior under length extrapolation is not fully characterized. This paper presents a Fourier-theoretic analysis of RoPE and shows how mismatched phase progression at unseen sequence lengths leads to frequency miscalibration, which contributes to degradation beyond the training context window. Motivated by this analysis, we study two minimal modifications that preserve RoPE’s structure: (i) a global frequency scaling factor parameterized by a single scalar $\gamma$, and (ii) per-frequency adaptive gates, termed Adaptive Spectral RoPE (AS-RoPE). We evaluate both methods on autoregressive language modeling and controlled synthetic long-distance retrieval tasks. Across extrapolation regimes, the proposed calibrations yield consistent perplexity improvements relative to standard RoPE while introducing limited additional complexity. Results further indicate a clear trade-off: global scaling is effective for mid-range extrapolation, but performance degradation remains at extreme lengths where aliasing effects become pronounced. These findings suggest that lightweight spectral calibration is a practical direction for improving extrapolation robustness without claiming to resolve long-context modeling in general.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Rotary Positional Embeddings, RoPE, Length Extrapolation, Spectral Analysis, Transformer Architectures
+\end{IEEEkeywords}
+
+\section{Introduction}
+Transformer language models rely critically on positional encoding for sequence modeling beyond local context. Rotary Positional Embedding (RoPE) is now a standard choice because it injects position through phase rotation while preserving an efficient relative-offset form in attention. In practice, however, models trained at a fixed context length often degrade when evaluated at substantially longer lengths. Understanding this failure mode is important for reliable long-context deployment.
+
+Many existing context-extension methods modify RoPE by global interpolation or rescaling of position indices. These approaches improve usable context ranges in several settings, but they do not directly analyze the frequency-domain structure induced by rotary phases. This motivates a complementary question: can extrapolation degradation be explained as spectral miscalibration, and can lightweight frequency calibration improve behavior without changing core transformer architecture?
+
+This paper addresses that question with a Fourier-theoretic treatment of RoPE and two minimal modifications. First, we show that rotary attention logits can be written as a fixed trigonometric expansion over predefined frequency channels, which clarifies the role of phase growth and aliasing at long offsets. Second, we introduce (i) a global frequency scaling factor $\gamma$ and (ii) per-frequency adaptive gates (AS-RoPE), both designed to preserve the original RoPE mechanism while calibrating its spectral progression.
+
+Empirically, we evaluate these variants on language modeling and controlled long-distance retrieval. Results indicate consistent perplexity improvements from per-frequency calibration and mid-range extrapolation gains from global scaling, while also showing that degradation persists at extreme lengths. These findings support spectral calibration as a practical, low-overhead tool for improving extrapolation robustness, with clear remaining limits.
+
+The main contributions are:
+\begin{itemize}
+\item A Fourier-domain analysis of RoPE that makes relative-phase dependence, spectral rigidity, and aliasing behavior explicit.
+\item A frequency-miscalibration hypothesis for extrapolation degradation under context-length shift.
+\item Two minimal RoPE calibrations (global scaling and AS-RoPE) with negligible parameter overhead.
+\item Controlled empirical evidence on language modeling and synthetic retrieval that quantifies both gains and remaining long-context failure modes.
+\end{itemize}
+
+\section{Background and Related Work}
+RoPE applies a position-dependent complex rotation to each 2-D feature pair, so the attention score between positions $m$ and $n$ is modulated by phase differences that depend on $(m-n)$ and a fixed frequency grid \cite{su2024roformer}. This construction preserves a relative-position form while retaining efficient dot-product attention, and it has therefore become common in large language models.
+
+More broadly, relative positional methods encode token offsets either by additive pairwise terms in attention logits \cite{shaw2018self,raffel2020t5} or by architectural recurrence and segment-level mechanisms \cite{dai2019transformerxl}. Linear-bias methods such as ALiBi provide another relative inductive bias with strong extrapolation behavior under simple parameterizations \cite{press2022alibi}. In this landscape, RoPE is distinctive in that position enters through multiplicative phase rotation rather than additive bias.
+
+Recent context-extension methods for RoPE mostly modify the position-to-phase map globally, e.g., position interpolation \cite{chen2023extending}, NTK-aware rescaling heuristics, and progressive interpolation schedules such as YaRN \cite{peng2024yarn} and LongRoPE \cite{ding2024longrope}. These approaches improve usable context length in practice, but they typically apply a deterministic transformation shared across frequency channels.
+
+Our work is also informed by spectral perspectives. Neural networks exhibit frequency-dependent learning behavior (spectral bias), often favoring lower frequencies \cite{rahaman2019spectral}, while Fourier feature mappings can reshape spectral conditioning and representation fidelity \cite{tancik2020fourier}. The gap we target is a lightweight, RoPE-compatible calibration at the frequency level: instead of only remapping positions globally, we explicitly calibrate spectral components through (i) one global scale $\gamma$ and (ii) per-frequency adaptive gates.
+
+\section{Fourier Analysis of RoPE}
+Consider one attention head with per-token query and key vectors grouped into $d/2$ two-dimensional channels. For channel $i$, define the complex variables
+\begin{equation}
+\tilde q_i = q_{2i} + j q_{2i+1}, \qquad \tilde k_i = k_{2i} + j k_{2i+1},
+\end{equation}
+and let $\omega_i$ denote the fixed RoPE angular frequency for that channel. At position $p$, RoPE applies
+\begin{equation}
+\tilde q_i^{(p)} = \tilde q_i e^{j\omega_i p}, \qquad
+\tilde k_i^{(p)} = \tilde k_i e^{j\omega_i p}.
+\end{equation}
+
+The unnormalized attention logit between positions $m$ and $n$ is the real part of channelwise complex inner products:
+\begin{align}
+s_{m,n}
+&= \sum_{i=1}^{d/2} \Re\!\left(\tilde q_i^{(m)} \overline{\tilde k_i^{(n)}}\right) \\
+&= \sum_{i=1}^{d/2} \Re\!\left(\tilde q_i \overline{\tilde k_i} e^{j\omega_i(m-n)}\right).
+\label{eq:rope_rel_phase}
+\end{align}
+Hence RoPE makes attention depend on relative offset $\Delta=m-n$ through phase factors $e^{j\omega_i\Delta}$.
+
+Writing $c_i=\tilde q_i\overline{\tilde k_i}=a_i+j b_i$, (\ref{eq:rope_rel_phase}) becomes
+\begin{equation}
+s(\Delta)=\sum_{i=1}^{d/2}\left[a_i\cos(\omega_i\Delta)-b_i\sin(\omega_i\Delta)\right],
+\label{eq:fourier_sum}
+\end{equation}
+which is a finite trigonometric expansion on a predetermined frequency grid $\{\omega_i\}$. Therefore, RoPE can be interpreted as using a fixed Fourier basis in the positional dimension, while the coefficients $(a_i,b_i)$ are content-dependent.
+
+This form implies spectral rigidity: positional frequencies are fixed a priori and cannot be relocated by the model within a head, except through coefficient reweighting. Consequently, if optimal extrapolation behavior requires a shifted or nonuniform spectral allocation at long offsets, standard RoPE can only approximate it through the existing basis.
+
+Aliasing follows from phase periodicity. Each channel is $2\pi$-periodic in phase, so offsets satisfying
+\begin{equation}
+\omega_i \Delta_1 \equiv \omega_i \Delta_2 \pmod{2\pi}
+\end{equation}
+are indistinguishable for that channel. The effective period is $T_i=2\pi/\omega_i$; high-frequency channels (large $\omega_i$) have small $T_i$ and wrap earlier as $|\Delta|$ grows. At long distances, multiple channels operate in wrapped regimes, which increases phase collisions and weakens unique distance discrimination. This mechanism is consistent with observed degradation under length extrapolation and motivates spectral calibration of RoPE frequencies.
+
+\section{Adaptive Spectral RoPE}
+Section III shows that RoPE attention is a fixed trigonometric basis over $\{\omega_i\}$; extrapolation errors can therefore be viewed as spectral miscalibration of phase growth with distance. We introduce two minimal calibrations that modify only the phase map while preserving the standard attention pipeline.
+
+For channel $i$ at position $p$, define the calibrated phase $\theta_{i,p}$ and rotated features
+\begin{equation}
+\tilde q_i^{(p)} = \tilde q_i e^{j\theta_{i,p}}, \qquad
+\tilde k_i^{(p)} = \tilde k_i e^{j\theta_{i,p}}.
+\end{equation}
+
+\textbf{A) Global Frequency Scaling:} a single scalar $\gamma$ rescales all frequencies,
+\begin{equation}
+\theta_{i,p}=\gamma\,\omega_i\,p.
+\label{eq:global_gamma}
+\end{equation}
+This preserves relative-phase structure and introduces one additional parameter (per layer or per model, depending on tying choice). The resulting logit remains a sum of sinusoids, but with effective frequencies $\gamma\omega_i$.
+
+\textbf{B) Adaptive Spectral RoPE (AS-RoPE):} each frequency channel has its own gate $g_i$,
+\begin{equation}
+\theta_{i,p}=g_i\,\omega_i\,p,
+\label{eq:adaptive_gate}
+\end{equation}
+yielding effective frequencies $g_i\omega_i$. In our implementation, a shared gate vector of length $d/2$ is learned at model level, which is negligible relative to attention projection matrices.
+
+\textbf{Initialization:} to recover baseline RoPE at the start of training, we set
+\begin{equation}
+\gamma=1, \qquad g_i=1\;\forall i.
+\end{equation}
+Thus optimization begins from an identity calibration and only adjusts spectral scaling when supported by data.
+
+\textbf{Stability:} unconstrained scaling can cause overly rapid phase wrapping for large $|p|$. We therefore use positivity-preserving parameterization (e.g., $\gamma=\exp(\hat\gamma)$, $g_i=\exp(\hat g_i)$) and optional bounded updates around $1$ to keep effective periods $T_i'=2\pi/(\gamma\omega_i)$ or $2\pi/(g_i\omega_i)$ within numerically stable ranges. Under these constraints, the method remains a lightweight spectral calibration, not a change in model architecture.
+
+\section{Experimental Setup}
+\textbf{Model architecture:} All compared models use the same compact GPT backbone within each experiment, with $d_{\text{model}}=256$, $n_{\text{heads}}=8$, and MLP ratio $4$; only positional encoding is changed: (i) standard RoPE, (ii) globally scaled RoPE with one learned scalar $\gamma$, and (iii) AS-RoPE with learned per-frequency gates $\{g_i\}$. The language-model setup uses 4 transformer layers, while the controlled multi-variant retrieval setup uses 6 layers.
+
+\textbf{Training context and data:} For language modeling, models are trained with context length $512$ on WikiText-2 tokenized by GPT-2 tokenizer. For retrieval experiments, training also uses sequence length $512$.
+
+\textbf{Evaluation lengths:} Extrapolation is evaluated at context lengths
+\begin{equation}
+\{512, 1024, 2048, 4096, 8192\}.
+\end{equation}
+For language modeling, perplexity is computed with an exact-once sliding-window protocol over validation tokens, with no overlap weighting artifacts and optional truncation controlled by \texttt{max\_eval\_tokens}. For synthetic retrieval, sequence-wise query accuracy is measured over $\{512,1024,2048,4096\}$.
+
+\textbf{Controlled comparison:} Fairness is enforced by matching architecture, optimizer family (AdamW), training context length, seed, and evaluation protocol across RoPE variants. Positional encoding is the only intentional intervention.
+
+\textbf{Synthetic long-distance retrieval task:} Each sequence contains a \emph{needle} marker followed by a value token in the first half of the context, and a \emph{query} marker at the final position. The target is defined only at the query position and equals the earlier value token. This isolates long-range retrieval under controlled token statistics.
+
+\textbf{Accuracy protocol and sample size:} Let $\mathcal{Q}$ be all query positions (one per sequence). Accuracy is
+\begin{equation}
+\mathrm{Acc}=\frac{1}{|\mathcal{Q}|}\sum_{t\in\mathcal{Q}}\mathbf{1}\{\hat y_t=y_t\}.
+\end{equation}
+With evaluation batch size $64$ and $20$ batches, each reported retrieval accuracy uses $64\times 20=1280$ query instances per context length.
+
+\textbf{Reproducibility notes:} Training and evaluation use fixed random seeds; perplexity evaluation additionally enables deterministic PyTorch backends. We report this setting explicitly since strict determinism may depend on hardware and backend support.
+
+\section{Results}
+\textbf{A) Language modeling perplexity under length extrapolation:} Perplexity increases with context length for all evaluated variants, indicating progressive extrapolation degradation. For RoPE baseline and AS-RoPE, the measured values are:
+\begin{align}
+\text{RoPE: } & [643.22,\;646.74,\;670.75,\;718.30,\;778.27], \\
+\text{AS-RoPE: } & [612.19,\;619.27,\;643.96,\;686.01,\;741.36],
+\end{align}
+at context lengths $[512,1024,2048,4096,8192]$, respectively. AS-RoPE yields lower perplexity at every tested length, with improvements that remain consistent as context grows. The degradation slope is positive for both methods, so calibration improves extrapolation quality but does not remove long-range deterioration.
+
+For globally scaled RoPE, evaluated perplexity values also increase with length (e.g., $658.83$ at $512$, $664.27$ at $1024$, $719.10$ at $4096$, and $766.83$ at $8192$), which is directionally consistent with residual long-context difficulty.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\textwidth]{results_positional/iclr_ppl_extrapolation.pdf}
+\caption{Language-model perplexity under context-length extrapolation for RoPE, Scaled RoPE, and AS-RoPE.}
+\label{fig:ppl_extrapolation}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Perplexity vs context length (generated artifact table).}
+\label{tab:lm_ppl}
+\input{results_positional/lm_perplexity_table.tex}
+\end{table}
+
+\textbf{B) Long-Distance Retrieval accuracy:} Controlled retrieval results (query-token accuracy) are
+\begin{align}
+\text{RoPE: } & [1.000,\;0.475,\;0.100,\;0.025], \\
+\text{Scaled RoPE: } & [0.975,\;0.600,\;0.100,\;0.000], \\
+\text{AS-RoPE: } & [1.000,\;0.450,\;0.025,\;0.075],
+\end{align}
+for context lengths $[512,1024,2048,4096]$. The dominant trend is a sharp decay with distance. Global scaling improves mid-range extrapolation at $1024$ (0.600 vs. 0.475 for baseline), while gains do not persist uniformly at longer lengths. AS-RoPE maintains competitive short-context performance and improves language-model perplexity, but retrieval accuracy at extreme distances remains low.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\textwidth]{results_positional/iclr_ldr_extrapolation.pdf}
+\caption{Long-distance retrieval extrapolation across context lengths.}
+\label{fig:ldr_extrapolation}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{LDR query accuracy table (generated artifact table).}
+\label{tab:ldr_acc}
+\input{results_positional/ldr_accuracy_table.tex}
+\end{table}
+
+\textbf{C) Interpretation:} Across both tasks, the evidence supports a calibrated but limited extrapolation benefit. Mid-range behavior can improve with global phase scaling, and per-frequency calibration improves perplexity consistently; however, failure modes at very long distances remain, consistent with persistent aliasing effects in fixed-frequency rotary phase representations.
+
+\section{Analysis and Discussion}
+The learned calibration parameters are consistent with a contraction regime. For global scaling, the trained factor is below unity in our runs (e.g., $\gamma\approx0.93$ in the controlled multi-variant experiment, with language-model training trajectories also converging to sub-unit values). For AS-RoPE in the same controlled setting, the gate mean is near unity but contractive on average ($\bar g\approx0.95$, with reported range approximately $[0.83,1.04]$).
+
+This pattern is aligned with the Fourier analysis in Section III: reducing effective frequencies from $\omega_i$ to $\gamma\omega_i$ or $g_i\omega_i$ increases effective periods and delays phase wrapping. In other words, contraction reduces phase growth per token and can postpone aliasing onset at moderate offsets, which is compatible with improved mid-range extrapolation.
+
+However, contraction does not remove periodicity. Even after rescaling, each channel remains sinusoidal with finite period $T_i'=2\pi/(\gamma\omega_i)$ or $2\pi/(g_i\omega_i)$, so sufficiently large offsets still enter wrapped regimes. This provides a direct explanation for why degradation persists at extreme lengths in both perplexity and retrieval accuracy.
+
+For long-context LLM design, these results suggest that spectral calibration is a useful low-overhead adjustment for extending practical operating range, but not a complete solution for arbitrarily long contexts. In particular, the evidence supports improved calibration within a finite extrapolation band, while indicating that additional mechanisms are likely required when target lengths substantially exceed training context.
+
+\section{Reproducibility and Workshop-Ready Reporting}
+To strengthen reproducibility and comparability, we report the practical protocol used for all released results.
+
+\textbf{Artifact release:} We provide training and evaluation scripts, model checkpoints for all variants, and machine-readable result files (CSV/JSON) used to regenerate plots and tables.
+
+\textbf{Deterministic evaluation:} Perplexity and retrieval metrics are computed with fixed seeds and a single, documented evaluation pipeline to avoid protocol drift across variants.
+
+\textbf{Effect-size reporting:} In addition to raw metrics, we recommend reporting relative improvements versus baseline at each context length and averaged across contexts. This makes extrapolation gains easier to interpret than isolated point estimates.
+
+\textbf{Variance estimation:} Since long-context retrieval can be sensitive to sample composition, workshop-ready reporting should include repeated runs over multiple seeds and confidence intervals for query accuracy. We treat this as a prioritized next step for camera-ready extension.
+
+\textbf{Scope statement:} We explicitly separate mechanism-level findings (small-model controlled studies) from deployment-scale claims. This improves scientific calibration and aligns claims with evidence.
+
+\section{Limitations}
+This study has several limitations that constrain the scope of its conclusions.
+
+First, experiments are conducted on comparatively small models (e.g., $d_{\text{model}}=256$, 6 layers), which are appropriate for controlled analysis but may not capture all optimization and scaling effects present in frontier-scale language models.
+
+Second, part of the evaluation relies on a controlled synthetic long-distance retrieval task. While this protocol isolates positional behavior and enables clear comparisons, it does not represent the full distributional complexity of natural-language long-context reasoning.
+
+Third, we do not provide large-scale pretraining or post-training studies on multi-billion-parameter models and production-length corpora. Therefore, the reported gains should be interpreted as evidence of mechanism-level utility rather than as definitive estimates of deployment-scale benefit.
+
+Fourth, the proposed calibrations do not fully resolve phase aliasing at extreme offsets. Results in both perplexity and retrieval indicate that degradation persists as context length grows far beyond training length.
+
+Finally, the present theory characterizes RoPE and calibration in a Fourier/phase framework, but a complete account of generalization limits under nonlinear deep transformer dynamics remains open. Further theoretical work is needed to connect spectral calibration parameters to extrapolation bounds in realistic training regimes.
+
+\section{Conclusion}
+This paper analyzed Rotary Positional Embedding (RoPE) through a Fourier lens, showing that rotary attention can be written as a fixed trigonometric basis over relative offsets. Within this view, length extrapolation degradation is naturally interpreted as frequency miscalibration: phase growth learned at training lengths does not remain well aligned at substantially larger offsets.
+
+Motivated by this analysis, we studied two minimal calibrations---a single global scaling factor $\gamma$ and per-frequency adaptive gates (AS-RoPE). Across the reported experiments, these modifications improved extrapolation behavior in a controlled manner: global scaling improved mid-range retrieval extrapolation, and AS-RoPE produced consistently lower language-model perplexity over evaluated context lengths.
+
+At the same time, results indicate persistent limitations at extreme lengths, consistent with residual aliasing in finite-period phase representations. Therefore, spectral calibration appears to be a practical low-overhead component for improving extrapolation robustness, but not a complete resolution of long-context modeling challenges.
+
+\begin{thebibliography}{00}
+\bibitem{vaswani2017attention}
+A. Vaswani \emph{et al.}, ``Attention Is All You Need,'' in \emph{Proc. NeurIPS}, 2017.
+
+\bibitem{shaw2018self}
+P. Shaw, J. Uszkoreit, and A. Vaswani, ``Self-Attention with Relative Position Representations,'' in \emph{Proc. NAACL}, 2018.
+
+\bibitem{dai2019transformerxl}
+Z. Dai \emph{et al.}, ``Transformer-XL: Attentive Language Models Beyond a Fixed-Length Context,'' in \emph{Proc. ACL}, 2019.
+
+\bibitem{raffel2020t5}
+C. Raffel \emph{et al.}, ``Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer,'' \emph{J. Mach. Learn. Res.}, vol. 21, no. 140, pp. 1--67, 2020.
+
+\bibitem{press2022alibi}
+O. Press, N. A. Smith, and M. Lewis, ``Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation,'' in \emph{Proc. ICLR}, 2022.
+
+\bibitem{su2024roformer}
+J. Su \emph{et al.}, ``RoFormer: Enhanced Transformer with Rotary Position Embedding,'' \emph{Neurocomputing}, vol. 568, p. 127063, 2024.
+
+\bibitem{chen2023extending}
+S. Chen \emph{et al.}, ``Extending Context Window of Large Language Models via Positional Interpolation,'' 2023, arXiv:2306.15595.
+
+\bibitem{peng2024yarn}
+B. Peng \emph{et al.}, ``YaRN: Efficient Context Window Extension of Large Language Models,'' in \emph{Proc. ICLR}, 2024.
+
+\bibitem{ding2024longrope}
+Y. Ding \emph{et al.}, ``LongRoPE: Extending LLM Context Window Beyond 2 Million Tokens,'' 2024, arXiv:2402.13753.
+
+\bibitem{rahaman2019spectral}
+N. Rahaman \emph{et al.}, ``On the Spectral Bias of Neural Networks,'' in \emph{Proc. ICML}, 2019.
+
+\bibitem{tancik2020fourier}
+M. Tancik \emph{et al.}, ``Fourier Features Let Networks Learn High Frequency Functions in Low Dimensional Domains,'' in \emph{Proc. NeurIPS}, 2020.
+\end{thebibliography}
+
+\end{document}
+

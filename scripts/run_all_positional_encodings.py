@@ -7,11 +7,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from long_distance_retrieval_dataset import LongDistanceRetrievalDataset
-from model import GPT
+from data.long_distance_retrieval_dataset import LongDistanceRetrievalDataset
+from src.model import GPT
 
 
-VARIANTS = ("rope", "scaled_rope", "as_rope")
+VARIANTS = ("rope", "scaled_rope", "as_rope", "alibi", "ntk_scaled_rope")
 
 
 def set_seed(seed: int) -> None:
@@ -81,8 +81,7 @@ def build_model(variant: str, args: argparse.Namespace, device: torch.device) ->
         n_heads=args.n_heads,
         max_seq_len=args.model_max_seq_len,
         mlp_ratio=args.mlp_ratio,
-        use_as_rope=(variant == "as_rope"),
-        use_scaled_rope=(variant == "scaled_rope"),
+        positional_encoding=variant,
     ).to(device)
 
 
@@ -154,6 +153,7 @@ def train_variant(variant: str, args: argparse.Namespace, device: torch.device) 
                 "n_heads": args.n_heads,
                 "mlp_ratio": args.mlp_ratio,
                 "max_seq_len": args.model_max_seq_len,
+                "positional_encoding": variant,
                 "use_as_rope": variant == "as_rope",
                 "use_scaled_rope": variant == "scaled_rope",
             },
@@ -165,9 +165,9 @@ def train_variant(variant: str, args: argparse.Namespace, device: torch.device) 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train and evaluate all three positional encoding variants.")
+    parser = argparse.ArgumentParser(description="Train and evaluate positional encoding variants.")
     parser.add_argument("--variants", type=str, default=",".join(VARIANTS))
-    parser.add_argument("--output_dir", type=str, default="results_positional")
+    parser.add_argument("--output_dir", type=str, default="results/results_positional")
 
     parser.add_argument("--vocab_size", type=int, default=128)
     parser.add_argument("--train_seq_len", type=int, default=512)

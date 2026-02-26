@@ -94,6 +94,12 @@ def main():
     parser.add_argument("--freq_stats_interval", type=int, default=1000)
     parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pt")
     parser.add_argument("--metrics_path", type=str, default="")
+    parser.add_argument(
+        "--positional_encoding",
+        type=str,
+        default="rope",
+        choices=["rope", "scaled_rope", "as_rope", "alibi", "ntk_scaled_rope"],
+    )
     parser.add_argument("--use_as_rope", action="store_true")
     parser.add_argument("--use_scaled_rope", action="store_true")
     parser.add_argument("--data_cache", type=str, default=".cache/wikitext2_gpt2")
@@ -101,6 +107,13 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
+
+    if args.use_as_rope and args.use_scaled_rope:
+        raise ValueError("--use_as_rope and --use_scaled_rope cannot both be set")
+    if args.use_as_rope:
+        args.positional_encoding = "as_rope"
+    elif args.use_scaled_rope:
+        args.positional_encoding = "scaled_rope"
 
     torch.manual_seed(args.seed)
     device = args.device
@@ -117,8 +130,7 @@ def main():
         n_layers=4,
         n_heads=8,
         max_seq_len=args.context_length,
-        use_as_rope=args.use_as_rope,
-        use_scaled_rope=args.use_scaled_rope,
+        positional_encoding=args.positional_encoding,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -129,8 +141,7 @@ def main():
 
     print(f"Training on {device}")
     print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
-    print(f"use_as_rope={args.use_as_rope}")
-    print(f"use_scaled_rope={args.use_scaled_rope}")
+    print(f"positional_encoding={args.positional_encoding}")
 
     start = time.time()
     train_losses: list[float] = []
@@ -158,14 +169,14 @@ def main():
             )
             metrics_rows.append((step, float(loss.item()), float(optimizer.param_groups[0]["lr"])))
 
-        if args.use_as_rope and model.freq_gates is not None and step % args.freq_stats_interval == 0:
+        if args.positional_encoding == "as_rope" and model.freq_gates is not None and step % args.freq_stats_interval == 0:
             gates = model.freq_gates.detach()
             print(
                 f"freq_gates step {step:5d} | mean {gates.mean().item():.6f} | std {gates.std(unbiased=False).item():.6f} | "
                 f"min {gates.min().item():.6f} | max {gates.max().item():.6f}"
             )
 
-        if args.use_scaled_rope and model.gamma is not None and step % args.freq_stats_interval == 0:
+        if args.positional_encoding == "scaled_rope" and model.gamma is not None and step % args.freq_stats_interval == 0:
             print(f"gamma step {step:5d} | value {model.gamma.detach().item():.6f}")
 
         if step % args.save_interval == 0 or step == args.max_steps:
@@ -180,8 +191,9 @@ def main():
                     "n_layers": 4,
                     "n_heads": 8,
                     "max_seq_len": args.context_length,
-                    "use_as_rope": bool(args.use_as_rope),
-                    "use_scaled_rope": bool(args.use_scaled_rope),
+                    "positional_encoding": args.positional_encoding,
+                    "use_as_rope": args.positional_encoding == "as_rope",
+                    "use_scaled_rope": args.positional_encoding == "scaled_rope",
                 },
             }
             torch.save(checkpoint, args.checkpoint_path)

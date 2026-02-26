@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 
 from model import GPT
-from long_distance_retrieval_dataset import LongDistanceRetrievalDataset
+from data.long_distance_retrieval_dataset import LongDistanceRetrievalDataset
 
 
 def set_seed(seed: int) -> None:
@@ -85,8 +85,7 @@ def train(args: argparse.Namespace) -> None:
         n_heads=args.n_heads,
         max_seq_len=args.model_max_seq_len,
         mlp_ratio=args.mlp_ratio,
-        use_as_rope=args.use_as_rope,
-        use_scaled_rope=args.use_scaled_rope,
+        positional_encoding=args.positional_encoding,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -173,8 +172,9 @@ def train(args: argparse.Namespace) -> None:
                     "n_heads": args.n_heads,
                     "mlp_ratio": args.mlp_ratio,
                     "max_seq_len": args.model_max_seq_len,
-                    "use_as_rope": bool(args.use_as_rope),
-                    "use_scaled_rope": bool(args.use_scaled_rope),
+                    "positional_encoding": args.positional_encoding,
+                    "use_as_rope": args.positional_encoding == "as_rope",
+                    "use_scaled_rope": args.positional_encoding == "scaled_rope",
                 },
                 "task": {
                     "needle_token_id": 126,
@@ -214,13 +214,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_steps", type=int, default=100000)
     parser.add_argument("--target_acc_512", type=float, default=0.99)
     parser.add_argument("--log_interval", type=int, default=50)
-    parser.add_argument("--checkpoint_path", type=str, default="checkpoint_ldr.pt")
-    parser.add_argument("--metrics_path", type=str, default="logs/ldr_metrics.csv")
+    parser.add_argument("--checkpoint_path", type=str, default="checkpoints/checkpoint_ldr.pt")
+    parser.add_argument("--metrics_path", type=str, default="results/ldr_metrics.csv")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--positional_encoding",
+        type=str,
+        default="rope",
+        choices=["rope", "scaled_rope", "as_rope", "alibi", "ntk_scaled_rope"],
+    )
     parser.add_argument("--use_as_rope", action="store_true")
     parser.add_argument("--use_scaled_rope", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.use_as_rope and args.use_scaled_rope:
+        raise ValueError("--use_as_rope and --use_scaled_rope cannot both be set")
+    if args.use_as_rope:
+        args.positional_encoding = "as_rope"
+    elif args.use_scaled_rope:
+        args.positional_encoding = "scaled_rope"
+    return args
 
 
 if __name__ == "__main__":

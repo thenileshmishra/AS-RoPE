@@ -4,9 +4,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from as_rope import ASRotaryEmbedding
-from rope import RotaryEmbedding
-from scaled_rope import ScaledRotaryEmbedding
+from positional_encodings.alibi import ALiBiBias
+from positional_encodings.as_rope import ASRotaryEmbedding
+from positional_encodings.ntk_scaled_rope import NTKScaledRotaryEmbedding
+from positional_encodings.rope import RotaryEmbedding
+from positional_encodings.scaled_rope import ScaledRotaryEmbedding
 
 
 class CausalSelfAttention(nn.Module):
@@ -15,14 +17,18 @@ class CausalSelfAttention(nn.Module):
         d_model: int,
         n_heads: int,
         max_seq_len: int,
+        positional_encoding: str = "rope",
         use_as_rope: bool = False,
         use_scaled_rope: bool = False,
     ):
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError(f"d_model={d_model} must be divisible by n_heads={n_heads}")
-        if use_as_rope and use_scaled_rope:
-            raise ValueError("use_as_rope and use_scaled_rope cannot both be True")
+        if positional_encoding not in {"rope", "scaled_rope", "as_rope", "alibi", "ntk_scaled_rope"}:
+            raise ValueError(
+                f"Unsupported positional_encoding='{positional_encoding}'. "
+                "Use one of: rope, scaled_rope, as_rope, alibi, ntk_scaled_rope"
+            )
 
         self.d_model = d_model
         self.n_heads = n_heads
@@ -33,8 +39,12 @@ class CausalSelfAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
-        self.use_as_rope = use_as_rope
-        self.use_scaled_rope = use_scaled_rope
+        self.positional_encoding = positional_encoding
+        self.use_as_rope = positional_encoding == "as_rope"
+        self.use_scaled_rope = positional_encoding == "scaled_rope"
+        self.use_alibi = positional_encoding == "alibi"
+        self.use_ntk_scaled_rope = positional_encoding == "ntk_scaled_rope"
+
         if self.use_as_rope:
             self.rope = ASRotaryEmbedding(
                 d_model=d_model,
@@ -44,6 +54,10 @@ class CausalSelfAttention(nn.Module):
             )
         elif self.use_scaled_rope:
             self.rope = ScaledRotaryEmbedding(head_dim=self.head_dim, max_seq_len=max_seq_len)
+        elif self.use_ntk_scaled_rope:
+            self.rope = NTKScaledRotaryEmbedding(head_dim=self.head_dim, max_seq_len=max_seq_len)
+        elif self.use_alibi:
+            self.alibi = ALiBiBias(n_heads=n_heads, max_seq_len=max_seq_len)
         else:
             self.rope = RotaryEmbedding(head_dim=self.head_dim, max_seq_len=max_seq_len)
 
@@ -62,7 +76,7 @@ class CausalSelfAttention(nn.Module):
         k = self.k_proj(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
 
-        # Apply rotary position embedding to Q and K.
+        # Apply positional encoding to attention.
         if self.use_as_rope:
             if freq_gates is None:
                 raise ValueError("freq_gates is required when use_as_rope=True")
@@ -71,12 +85,15 @@ class CausalSelfAttention(nn.Module):
             if gamma is None:
                 raise ValueError("gamma is required when use_scaled_rope=True")
             q, k = self.rope(q, k, gamma)
-        else:
+        elif not self.use_alibi:
             q, k = self.rope(q, k)
 
         # Scaled dot-product causal attention.
         # Scores: [B, H, T, T]
         scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+
+        if self.use_alibi:
+            scores = scores + self.alibi(seq_len=seq_len, device=x.device, dtype=scores.dtype)
 
         # Causal mask so token i can only attend to <= i.
         causal_mask = torch.triu(
@@ -99,6 +116,7 @@ class TransformerBlock(nn.Module):
         n_heads: int,
         mlp_ratio: int,
         max_seq_len: int,
+        positional_encoding: str = "rope",
         use_as_rope: bool = False,
         use_scaled_rope: bool = False,
     ):
@@ -108,6 +126,7 @@ class TransformerBlock(nn.Module):
             d_model,
             n_heads,
             max_seq_len,
+            positional_encoding=positional_encoding,
             use_as_rope=use_as_rope,
             use_scaled_rope=use_scaled_rope,
         )
@@ -140,6 +159,7 @@ class GPT(nn.Module):
         n_heads: int = 8,
         max_seq_len: int = 1024,
         mlp_ratio: int = 4,
+        positional_encoding: str = "rope",
         use_as_rope: bool = False,
         use_scaled_rope: bool = False,
     ):
@@ -148,10 +168,24 @@ class GPT(nn.Module):
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.max_seq_len = max_seq_len
-        self.use_as_rope = use_as_rope
-        self.use_scaled_rope = use_scaled_rope
-        if self.use_as_rope and self.use_scaled_rope:
+        if use_as_rope and use_scaled_rope:
             raise ValueError("use_as_rope and use_scaled_rope cannot both be True")
+        if positional_encoding not in {"rope", "scaled_rope", "as_rope", "alibi", "ntk_scaled_rope"}:
+            raise ValueError(
+                f"Unsupported positional_encoding='{positional_encoding}'. "
+                "Use one of: rope, scaled_rope, as_rope, alibi, ntk_scaled_rope"
+            )
+
+        if use_as_rope:
+            positional_encoding = "as_rope"
+        elif use_scaled_rope:
+            positional_encoding = "scaled_rope"
+
+        self.positional_encoding = positional_encoding
+        self.use_as_rope = positional_encoding == "as_rope"
+        self.use_scaled_rope = positional_encoding == "scaled_rope"
+        self.use_alibi = positional_encoding == "alibi"
+        self.use_ntk_scaled_rope = positional_encoding == "ntk_scaled_rope"
 
         self.freq_gates = None
         if self.use_as_rope:
@@ -169,6 +203,7 @@ class GPT(nn.Module):
                     n_heads=n_heads,
                     mlp_ratio=mlp_ratio,
                     max_seq_len=max_seq_len,
+                    positional_encoding=positional_encoding,
                     use_as_rope=use_as_rope,
                     use_scaled_rope=use_scaled_rope,
                 )

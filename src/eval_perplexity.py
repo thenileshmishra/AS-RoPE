@@ -142,6 +142,12 @@ def main() -> None:
     checkpoint = torch.load(args.checkpoint_path, map_location=args.device)
     config = checkpoint.get("config", {})
     vocab_size = int(config.get("vocab_size", tokenizer.vocab_size))
+    positional_encoding = str(config.get("positional_encoding", "rope"))
+    if positional_encoding == "rope":
+        if bool(config.get("use_as_rope", False)):
+            positional_encoding = "as_rope"
+        elif bool(config.get("use_scaled_rope", False)):
+            positional_encoding = "scaled_rope"
 
     if int(data.max().item()) >= vocab_size:
         raise ValueError(
@@ -155,8 +161,7 @@ def main() -> None:
         n_layers=int(config.get("n_layers", 4)),
         n_heads=int(config.get("n_heads", 8)),
         max_seq_len=max(int(config.get("max_seq_len", 512)), max(context_lengths)),
-        use_as_rope=bool(config.get("use_as_rope", False)),
-        use_scaled_rope=bool(config.get("use_scaled_rope", False)),
+        positional_encoding=positional_encoding,
     ).to(args.device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
