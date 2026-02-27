@@ -165,6 +165,8 @@ def main() -> None:
         n_heads=int(config.get("n_heads", 8)),
         max_seq_len=max(int(config.get("max_seq_len", 512)), max(context_lengths)),
         positional_encoding=positional_encoding,
+        as_rope_per_layer_gates=bool(config.get("as_rope_per_layer_gates", False)),
+        allow_negative_gates=bool(config.get("allow_negative_gates", False)),
     ).to(args.device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
