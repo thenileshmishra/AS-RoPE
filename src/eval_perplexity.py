@@ -1,4 +1,5 @@
 import argparse
+import json
 import math
 import os
 from pathlib import Path
@@ -8,7 +9,7 @@ import torch.nn.functional as F
 from datasets import load_dataset
 from transformers import GPT2TokenizerFast
 
-from model import GPT
+from src.model import GPT
 
 
 def _hf_token() -> str | None:
@@ -122,14 +123,16 @@ def main() -> None:
     parser.add_argument("--data_cache", type=str, default=".cache/wikitext2_gpt2")
     parser.add_argument("--context_lengths", type=str, default="512,1024,2048")
     parser.add_argument("--max_eval_tokens", type=int, default=0)
+    parser.add_argument("--results_json", type=str, default="")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
     context_lengths = parse_context_lengths(args.context_lengths)
 
-    torch.manual_seed(0)
+    torch.manual_seed(args.seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(0)
+        torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True)
@@ -166,6 +169,7 @@ def main() -> None:
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
+    output_rows: dict[str, float] = {}
     for context_len in context_lengths:
         ppl = perplexity_sliding_window(
             model=model,
@@ -174,7 +178,22 @@ def main() -> None:
             device=args.device,
             max_seq_len=model.max_seq_len,
         )
+        output_rows[str(context_len)] = float(ppl)
         print(f"context={context_len} ppl={ppl:.6f}")
+
+    if args.results_json:
+        out_path = Path(args.results_json)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "checkpoint_path": args.checkpoint_path,
+            "positional_encoding": positional_encoding,
+            "seed": int(args.seed),
+            "context_lengths": context_lengths,
+            "perplexity": output_rows,
+        }
+        with out_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        print(f"results_json={out_path.resolve()}")
 
 
 if __name__ == "__main__":

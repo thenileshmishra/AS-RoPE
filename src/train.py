@@ -103,20 +103,40 @@ def run_single_seed(
 
     model = GPT(
         vocab_size=tokenizer.vocab_size,
-        d_model=256,
-        n_layers=4,
-        n_heads=8,
+        d_model=args.d_model,
+        n_layers=args.n_layers,
+        n_heads=args.n_heads,
         max_seq_len=args.context_length,
         positional_encoding=args.positional_encoding,
         as_rope_per_layer_gates=args.as_rope_per_layer_gates,
         allow_negative_gates=args.allow_negative_gates,
     ).to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    gate_weight_decay = args.gate_weight_decay if args.gate_weight_decay >= 0 else args.weight_decay
+    param_groups = None
+    if args.positional_encoding == "as_rope" and model.freq_gates is not None and args.gate_weight_decay >= 0:
+        gate_param_ids = {id(model.freq_gates)}
+        base_params = [p for p in model.parameters() if id(p) not in gate_param_ids]
+        param_groups = [
+            {"params": base_params, "weight_decay": args.weight_decay},
+            {"params": [model.freq_gates], "weight_decay": gate_weight_decay},
+        ]
+
+    optimizer_name = str(args.optimizer).lower()
+    optim_params = param_groups if param_groups is not None else model.parameters()
+    if optimizer_name == "adamw":
+        optimizer = torch.optim.AdamW(optim_params, lr=args.lr, weight_decay=args.weight_decay)
+    elif optimizer_name == "adam":
+        optimizer = torch.optim.Adam(optim_params, lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        raise ValueError(f"Unsupported optimizer '{args.optimizer}'. Use one of: adamw, adam")
+
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lr_lambda=lambda step: cosine_with_warmup_lambda(step, args.warmup_steps, args.max_steps),
     )
+    amp_enabled = bool(args.fp16 and device.startswith("cuda"))
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
     run_dir = Path(args.output_dir) / args.positional_encoding / f"seed_{seed}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -126,6 +146,11 @@ def run_single_seed(
     print(f"\n--- Seed run start | positional_encoding={args.positional_encoding} | seed={seed} ---")
     print(f"Training on {device}")
     print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    print(
+        f"d_model={args.d_model} n_layers={args.n_layers} n_heads={args.n_heads} "
+        f"context_length={args.context_length} batch_size={args.batch_size} "
+        f"grad_accum_steps={args.grad_accum_steps} fp16={amp_enabled}"
+    )
     if args.positional_encoding == "as_rope":
         print(
             f"as_rope_per_layer_gates={args.as_rope_per_layer_gates} "
@@ -135,33 +160,48 @@ def run_single_seed(
     start = time.time()
     train_losses: list[float] = []
     metrics_rows: list[dict[str, float | int]] = []
+    tokens_processed = 0
 
     for step in range(1, args.max_steps + 1):
-        x, y = get_batch(train_data, args.batch_size, args.context_length, device)
-
         optimizer.zero_grad(set_to_none=True)
-        _, loss = model(x, y)
+        accum_loss = 0.0
+        for _ in range(args.grad_accum_steps):
+            x, y = get_batch(train_data, args.batch_size, args.context_length, device)
 
-        if not torch.isfinite(loss):
-            raise RuntimeError(f"Non-finite loss detected at step {step}: {loss.item()}")
+            with torch.amp.autocast(device_type="cuda", enabled=amp_enabled, dtype=torch.float16):
+                _, loss = model(x, y)
+                loss = loss / args.grad_accum_steps
 
-        loss.backward()
-        optimizer.step()
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"Non-finite loss detected at step {step}: {loss.item()}")
+
+            scaler.scale(loss).backward()
+            accum_loss += float(loss.item())
+            tokens_processed += int(args.batch_size * args.context_length)
+
+        if args.grad_clip > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
-        train_losses.append(float(loss.item()))
+        step_loss = accum_loss * args.grad_accum_steps
+        train_losses.append(step_loss)
 
         if step % args.log_interval == 0 or step == 1:
             elapsed = time.time() - start
             current_lr = float(optimizer.param_groups[0]["lr"])
             print(
-                f"step {step:5d} | train_loss {loss.item():.4f} | "
-                f"lr {current_lr:.6e} | {elapsed:.1f}s"
+                f"step {step:5d} | train_loss {step_loss:.4f} | "
+                f"lr {current_lr:.6e} | tokens {tokens_processed} | {elapsed:.1f}s"
             )
             metrics_rows.append(
                 {
                     "step": int(step),
-                    "train_loss": float(loss.item()),
+                    "train_loss": float(step_loss),
                     "lr": current_lr,
+                    "tokens_processed": int(tokens_processed),
                 }
             )
 
@@ -184,9 +224,9 @@ def run_single_seed(
                 "scheduler_state_dict": scheduler.state_dict(),
                 "config": {
                     "vocab_size": tokenizer.vocab_size,
-                    "d_model": 256,
-                    "n_layers": 4,
-                    "n_heads": 8,
+                    "d_model": int(args.d_model),
+                    "n_layers": int(args.n_layers),
+                    "n_heads": int(args.n_heads),
                     "max_seq_len": args.context_length,
                     "positional_encoding": args.positional_encoding,
                     "use_as_rope": args.positional_encoding == "as_rope",
@@ -215,6 +255,7 @@ def run_single_seed(
         "checkpoint_path": str(checkpoint_path),
         "metrics": metrics_rows,
         "final_train_loss": float(train_losses[-1]) if train_losses else None,
+        "tokens_processed": int(tokens_processed),
         "training_loss_decreasing": training_loss_decreasing,
         "start_avg_loss": start_avg,
         "end_avg_loss": end_avg,
@@ -229,8 +270,8 @@ def run_single_seed(
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         with metrics_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["step", "train_loss", "lr"])
-            writer.writerows([(m["step"], m["train_loss"], m["lr"]) for m in metrics_rows])
+            writer.writerow(["step", "train_loss", "lr", "tokens_processed"])
+            writer.writerows([(m["step"], m["train_loss"], m["lr"], m["tokens_processed"]) for m in metrics_rows])
         print(f"Metrics saved: {metrics_path.resolve()}")
 
     print(f"Seed {seed} outputs saved to: {run_dir.resolve()}")
@@ -241,13 +282,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--max_steps", type=int, default=10000)
+    parser.add_argument("--d_model", type=int, default=256)
+    parser.add_argument("--n_layers", type=int, default=4)
+    parser.add_argument("--layers", type=int, default=0)
+    parser.add_argument("--n_heads", type=int, default=8)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--warmup_steps", type=int, default=500)
     parser.add_argument("--weight_decay", type=float, default=0.1)
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adam"])
+    parser.add_argument("--gate_weight_decay", type=float, default=-1.0)
     parser.add_argument("--context_length", type=int, default=512)
     parser.add_argument("--save_interval", type=int, default=1000)
+    parser.add_argument("--eval_interval", type=int, default=0)
     parser.add_argument("--log_interval", type=int, default=200)
     parser.add_argument("--freq_stats_interval", type=int, default=1000)
+    parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument("--grad_accum_steps", type=int, default=1)
+    parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pt")
     parser.add_argument("--metrics_path", type=str, default="")
     parser.add_argument(
@@ -267,6 +318,13 @@ def main():
     parser.add_argument("--output_dir", type=str, default="results/train_runs")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
+
+    if args.eval_interval > 0:
+        args.save_interval = args.eval_interval
+    if args.grad_accum_steps < 1:
+        raise ValueError("--grad_accum_steps must be >= 1")
+    if args.layers > 0:
+        args.n_layers = args.layers
 
     if args.use_as_rope and args.use_scaled_rope:
         raise ValueError("--use_as_rope and --use_scaled_rope cannot both be set")
