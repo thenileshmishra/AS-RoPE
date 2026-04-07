@@ -24,7 +24,6 @@ checkpoint*/
 .data/
 .cache/
 logs/
-*.csv
 
 # IDEs
 .vscode/
@@ -36,3 +35,33 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+
+# Local docs artifacts (keep only main paper source tracked)
+docs/*.html
+docs/*.pdf
+docs/presentation.*
+docs/paper_submission.*
+!docs/paper_submission.tex
+
+# Experiment outputs
+results/
