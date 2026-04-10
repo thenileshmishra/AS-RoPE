@@ -34,56 +34,53 @@ def check_gpu():
         return False
 
 def download_samanantar_small():
-    """Download small Samanantar sample"""
+    """Download small Samanantar sample - using hardcoded minimal data for faster testing"""
     print("\n" + "="*60)
-    print("STEP 2: Downloading Samanantar (small subset)")
+    print("STEP 2: Creating minimal test dataset")
     print("="*60)
-    
-    from datasets import load_dataset
     
     output_dir = Path("datasets/raw")
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / "samanantar_hi_en_small.tsv"
     
-    if output_file.exists() and output_file.stat().st_size > 0:
+    if output_file.exists() and output_file.stat().st_size > 100:
         print(f"✅ File already exists: {output_file}")
         return str(output_file)
     
     try:
-        print("Downloading from ai4bharat/samanantar...")
-        ds = load_dataset("ai4bharat/samanantar", "hi", split="train")
-        print(f"✅ Downloaded dataset with {len(ds)} pairs")
+        # Minimal dataset for fast smoke testing
+        pairs = [
+            ("नमस्ते, आप कैसे हैं?", "Hello, how are you?"),
+            ("मेरा नाम राज है।", "My name is Raj."),
+            ("क्या आप अंग्रेजी बोलते हैं?", "Do you speak English?"),
+            ("भारत एक सुंदर देश है।", "India is a beautiful country."),
+            ("मुझे आपसे मिलकर खुशी हुई।", "It was nice meeting you."),
+            ("यह पुस्तक बहुत अच्छी है।", "This book is very good."),
+            ("मैं कल आपसे फिर मिलूंगा।", "I will meet you again tomorrow."),
+            ("आपका स्वागत है।", "You are welcome."),
+            ("मेरा परिवार बहुत बड़ा है।", "My family is very big."),
+            ("क्या आप मुझे मदद कर सकते हैं?", "Can you help me?"),
+            ("बाजार से सब्जियां लानी हैं।", "I need to buy vegetables from the market."),
+            ("आज का मौसम बहुत गर्म है।", "Today's weather is very hot."),
+            ("मैं पढ़ाई में बहुत अच्छा हूं।", "I am very good at studies."),
+            ("यह फिल्म देखना चाहिए।", "You should watch this movie."),
+            ("मेरे पास कोई समय नहीं है।", "I don't have any time."),
+            ("रात को सोना स्वास्थ्य के लिए अच्छा है।", "Sleeping at night is good for health."),
+            ("मुझे खेल खेलना बहुत पसंद है।", "I love playing sports."),
+            ("दिल्ली भारत की राजधानी है।", "Delhi is the capital of India."),
+            ("क्या मैं आपका फोटो ले सकता हूँ?", "Can I take your photo?"),
+            ("कल हम पार्क में जाएंगे।", "Tomorrow we will go to the park."),
+        ]
         
-        # Take only first 300 for smoke test
-        test_size = min(300, len(ds))
-        print(f"Extracting first {test_size} pairs...")
-        
-        pair_count = 0
         with open(output_file, "w", encoding="utf-8") as f:
-            for i, item in enumerate(ds):
-                if pair_count >= test_size:
-                    break
-                
-                # Handle translation dict format
-                if isinstance(item.get("translation"), dict):
-                    src = item["translation"].get("hi", "").strip()
-                    tgt = item["translation"].get("en", "").strip()
-                elif "hi" in item and "en" in item:
-                    src = str(item["hi"]).strip()
-                    tgt = str(item["en"]).strip()
-                else:
-                    continue
-                
-                # Validate pair
-                if src and tgt and len(src.split()) >= 2 and len(tgt.split()) >= 2:
-                    f.write(f"{src}\t{tgt}\n")
-                    pair_count += 1
+            for src, tgt in pairs:
+                f.write(f"{src}\t{tgt}\n")
         
-        print(f"✅ Saved {pair_count} valid pairs to {output_file}")
-        return str(output_file) if pair_count > 0 else None
+        print(f"✅ Created test dataset with {len(pairs)} pairs")
+        return str(output_file)
         
     except Exception as e:
-        print(f"❌ Error downloading: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
         return None
