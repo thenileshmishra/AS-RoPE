@@ -90,7 +90,11 @@ def clean_data(input_file):
     output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        # Run preprocess script
+        # Run preprocess script with PYTHONPATH set
+        env = os.environ.copy()
+        repo_root = Path(__file__).parent.parent
+        env['PYTHONPATH'] = str(repo_root)
+        
         cmd = [
             sys.executable,
             "data/preprocess_mt.py",
@@ -102,7 +106,7 @@ def clean_data(input_file):
         ]
         
         print(f"Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
         
         if result.returncode == 0:
             print(f"✅ Data cleaned")
@@ -128,6 +132,11 @@ def train_sinusoidal(data_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
+        # Set PYTHONPATH for subprocess
+        env = os.environ.copy()
+        repo_root = Path(__file__).parent.parent
+        env['PYTHONPATH'] = str(repo_root)
+        
         cmd = [
             sys.executable,
             "src/train_mt.py",
@@ -149,7 +158,7 @@ def train_sinusoidal(data_dir):
         
         print(f"Running: {' '.join(cmd)}")
         print("(This will take 2-5 minutes...)")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
         
         print(result.stdout)
         
