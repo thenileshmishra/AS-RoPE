@@ -101,7 +101,6 @@ def clean_data(input_file):
             input_file,
             str(output_dir),
             "--seed", "42",
-            "--max-pairs", "500",
             "--max-length", "128"
         ]
         
