@@ -1,0 +1,42 @@
+{
+  "description": "Day 5 baseline comparison: four positional encodings on Hindi-English MT",
+  "shared": {
+    "tokenizer": "gpt2",
+    "max_seq_len": 128,
+    "batch_size": 16,
+    "learning_rate": 3e-4,
+    "weight_decay": 0.01,
+    "num_steps": 2000,
+    "eval_every": 200,
+    "seed": 42,
+    "device": "cpu",
+    "d_model": 256,
+    "n_layers": 6,
+    "n_heads": 8,
+    "max_new_tokens": 64
+  },
+  "data": {
+    "train_file": "results/mt_runs/day3_smoke/data/train.tsv",
+    "val_file": "results/mt_runs/day3_smoke/data/val.tsv",
+    "eval_tsv": "results/mt_runs/day3_smoke/data/test.tsv"
+  },
+  "baselines": [
+    {
+      "name": "rope",
+      "positional_encoding": "rope"
+    },
+    {
+      "name": "alibi",
+      "positional_encoding": "alibi"
+    },
+    {
+      "name": "ntk_scaled_rope",
+      "positional_encoding": "ntk_scaled_rope"
+    },
+    {
+      "name": "sinusoidal",
+      "positional_encoding": "sinusoidal"
+    }
+  ],
+  "output_root": "results/day5_baselines"
+}

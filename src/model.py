@@ -11,6 +11,7 @@ from src.positional_encodings.as_rope import ASRotaryEmbedding
 from src.positional_encodings.ntk_scaled_rope import NTKScaledRotaryEmbedding
 from src.positional_encodings.rope import RotaryEmbedding
 from src.positional_encodings.scaled_rope import ScaledRotaryEmbedding
+from src.positional_encodings.sinusoidal import SinusoidalPositionalEmbedding
 
 
 class CausalSelfAttention(nn.Module):
@@ -27,10 +28,10 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError(f"d_model={d_model} must be divisible by n_heads={n_heads}")
-        if positional_encoding not in {"rope", "scaled_rope", "as_rope", "alibi", "ntk_scaled_rope"}:
+        if positional_encoding not in {"rope", "scaled_rope", "as_rope", "alibi", "ntk_scaled_rope", "sinusoidal"}:
             raise ValueError(
                 f"Unsupported positional_encoding='{positional_encoding}'. "
-                "Use one of: rope, scaled_rope, as_rope, alibi, ntk_scaled_rope"
+                "Use one of: rope, scaled_rope, as_rope, alibi, ntk_scaled_rope, sinusoidal"
             )
 
         self.d_model = d_model
@@ -47,6 +48,7 @@ class CausalSelfAttention(nn.Module):
         self.use_scaled_rope = positional_encoding == "scaled_rope"
         self.use_alibi = positional_encoding == "alibi"
         self.use_ntk_scaled_rope = positional_encoding == "ntk_scaled_rope"
+        self.use_sinusoidal = positional_encoding == "sinusoidal"
 
         if self.use_as_rope:
             self.rope = ASRotaryEmbedding(
@@ -89,7 +91,7 @@ class CausalSelfAttention(nn.Module):
             if gamma is None:
                 raise ValueError("gamma is required when use_scaled_rope=True")
             q, k = self.rope(q, k, gamma)
-        elif not self.use_alibi:
+        elif not (self.use_alibi or self.use_sinusoidal):
             q, k = self.rope(q, k)
 
         # Scaled dot-product causal attention.
@@ -178,10 +180,10 @@ class GPT(nn.Module):
         self.max_seq_len = max_seq_len
         if use_as_rope and use_scaled_rope:
             raise ValueError("use_as_rope and use_scaled_rope cannot both be True")
-        if positional_encoding not in {"rope", "scaled_rope", "as_rope", "alibi", "ntk_scaled_rope"}:
+        if positional_encoding not in {"rope", "scaled_rope", "as_rope", "alibi", "ntk_scaled_rope", "sinusoidal"}:
             raise ValueError(
                 f"Unsupported positional_encoding='{positional_encoding}'. "
-                "Use one of: rope, scaled_rope, as_rope, alibi, ntk_scaled_rope"
+                "Use one of: rope, scaled_rope, as_rope, alibi, ntk_scaled_rope, sinusoidal"
             )
 
         if use_as_rope:
@@ -194,6 +196,7 @@ class GPT(nn.Module):
         self.use_scaled_rope = positional_encoding == "scaled_rope"
         self.use_alibi = positional_encoding == "alibi"
         self.use_ntk_scaled_rope = positional_encoding == "ntk_scaled_rope"
+        self.use_sinusoidal = positional_encoding == "sinusoidal"
         self.as_rope_per_layer_gates = as_rope_per_layer_gates
         self.allow_negative_gates = allow_negative_gates
 
@@ -207,6 +210,10 @@ class GPT(nn.Module):
         self.gamma = None
         if self.use_scaled_rope:
             self.gamma = nn.Parameter(torch.tensor(1.0))
+
+        self.sinusoidal_pe = None
+        if self.use_sinusoidal:
+            self.sinusoidal_pe = SinusoidalPositionalEmbedding(d_model, max_seq_len)
 
         self.token_emb = nn.Embedding(vocab_size, d_model)
         self.blocks = nn.ModuleList(
@@ -249,6 +256,10 @@ class GPT(nn.Module):
 
         # Token embedding.
         x = self.token_emb(input_ids)  # [B, T, C]
+
+        # Sinusoidal: add fixed positional embedding to token embedding.
+        if self.use_sinusoidal and self.sinusoidal_pe is not None:
+            x = x + self.sinusoidal_pe(seq_len)
 
         # Decoder stack.
         for layer_idx, block in enumerate(self.blocks):
