@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -22,12 +23,26 @@ from data.mt_dataset import deterministic_split, load_pairs
 def deduplicate_pairs(
     pairs: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    """Remove exact (src, tgt) duplicates while preserving order."""
+    """Remove exact and near-identical duplicates while preserving order.
+
+    Near-identical here means same pair after lowercasing and punctuation
+    stripping. This catches repeated source/target variants such as casing
+    or trailing punctuation differences.
+    """
     seen: set[tuple[str, str]] = set()
+    seen_canonical: set[tuple[str, str]] = set()
     out: list[tuple[str, str]] = []
+
+    def canonicalize(text: str) -> str:
+        text = text.lower().strip()
+        text = re.sub(r"\s+", " ", text)
+        return re.sub(r"[^\w\s]", "", text)
+
     for pair in pairs:
-        if pair not in seen:
+        canonical_pair = (canonicalize(pair[0]), canonicalize(pair[1]))
+        if pair not in seen and canonical_pair not in seen_canonical:
             seen.add(pair)
+            seen_canonical.add(canonical_pair)
             out.append(pair)
     return out
 
