@@ -12,6 +12,7 @@ import argparse
 import json
 import math
 import random
+import time
 from pathlib import Path
 
 import torch
@@ -298,17 +299,26 @@ def train(args: argparse.Namespace) -> dict:
     metrics_path = save_dir / "metrics.jsonl"
     best_ckpt_path = save_dir / "best.pt"
     last_ckpt_path = save_dir / "last.pt"
+    summary_path = save_dir / "run_summary.json"
 
     best_val = float("inf")
+    best_step = -1
+    last_val_loss = float("nan")
     best_val_saved = False
+    cumulative_tokens = 0
     train_iter = _infinite(train_loader)
     model.train()
+
+    train_start = time.monotonic()
 
     with open(metrics_path, "w", encoding="utf-8") as metrics_fp:
         for step in range(1, args.num_steps + 1):
             batch = next(train_iter)
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            tokens_in_batch = int(attention_mask.sum().item())
+            cumulative_tokens += tokens_in_batch
 
             optimizer.zero_grad(set_to_none=True)
             logits, _ = model(input_ids)
@@ -318,20 +328,33 @@ def train(args: argparse.Namespace) -> dict:
             optimizer.step()
             scheduler.step()
 
+            elapsed_sec = time.monotonic() - train_start
+            wall_time_sec = time.time()
             lr = optimizer.param_groups[0]["lr"]
             train_loss = float(loss.item())
-            row = {"step": step, "train_loss": train_loss, "lr": lr}
+
+            row = {
+                "step": step,
+                "train_loss": train_loss,
+                "lr": lr,
+                "wall_time_sec": wall_time_sec,
+                "elapsed_sec": elapsed_sec,
+                "tokens_in_batch": tokens_in_batch,
+                "cumulative_tokens": cumulative_tokens,
+            }
 
             if step % args.eval_every == 0 or step == args.num_steps:
                 val_loss, val_ppl = evaluate(model, val_loader, device)
                 row["val_loss"] = val_loss
                 row["val_ppl"] = val_ppl
+                last_val_loss = val_loss
                 print(
                     f"step {step:5d} | train_loss {train_loss:.4f} | "
                     f"lr {lr:.6f} | val_loss {val_loss:.4f} | val_ppl {val_ppl:.2f}"
                 )
                 if math.isfinite(val_loss) and val_loss < best_val:
                     best_val = val_loss
+                    best_step = step
                     _save_checkpoint(
                         best_ckpt_path, model, optimizer, scheduler, step, run_config, val_loss
                     )
@@ -341,6 +364,8 @@ def train(args: argparse.Namespace) -> dict:
 
             metrics_fp.write(json.dumps(row) + "\n")
             metrics_fp.flush()
+
+    total_train_time_sec = time.monotonic() - train_start
 
     # Always save a final "last" checkpoint
     _save_checkpoint(
@@ -352,12 +377,33 @@ def train(args: argparse.Namespace) -> dict:
         _save_checkpoint(
             best_ckpt_path, model, optimizer, scheduler, args.num_steps, run_config, best_val
         )
+        best_step = args.num_steps
+
+    avg_step_time_sec = total_train_time_sec / max(1, args.num_steps)
+
+    run_summary = {
+        "best_val_loss": best_val,
+        "best_step": best_step,
+        "final_val_loss": last_val_loss,
+        "total_steps": args.num_steps,
+        "total_train_time_sec": total_train_time_sec,
+        "avg_step_time_sec": avg_step_time_sec,
+        "total_tokens_seen": cumulative_tokens,
+        "positional_encoding": args.positional_encoding,
+        "seed": args.seed,
+        "best_ckpt": str(best_ckpt_path),
+        "last_ckpt": str(last_ckpt_path),
+        "metrics_path": str(metrics_path),
+        "run_config_path": str(save_dir / "run_config.json"),
+    }
+    summary_path.write_text(json.dumps(run_summary, indent=2), encoding="utf-8")
 
     return {
         "best_ckpt": str(best_ckpt_path),
         "last_ckpt": str(last_ckpt_path),
         "metrics_path": str(metrics_path),
         "run_config_path": str(save_dir / "run_config.json"),
+        "run_summary_path": str(summary_path),
         "best_val_loss": best_val,
     }
 

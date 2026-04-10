@@ -181,9 +181,11 @@ def test_write_summary_csv_and_json():
         tmp = Path(tmp)
         rows = [
             {"run_name": "rope", "positional_encoding": "rope",
-             "bleu": 5.0, "chrf": 20.0, "checkpoint_path": "x", "status": "ok"},
+             "bleu": 5.0, "chrf": 20.0, "checkpoint_path": "x",
+             "metrics_path": "x_metrics", "status": "ok"},
             {"run_name": "alibi", "positional_encoding": "alibi",
-             "bleu": None, "chrf": None, "checkpoint_path": "y", "status": "missing"},
+             "bleu": None, "chrf": None, "checkpoint_path": "y",
+             "metrics_path": "y_metrics", "status": "missing"},
         ]
         csv_path, json_path = write_summary(rows, tmp)
 

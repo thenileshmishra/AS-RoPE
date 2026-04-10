@@ -17,6 +17,7 @@ SUMMARY_COLUMNS = [
     "bleu",
     "chrf",
     "checkpoint_path",
+    "metrics_path",
     "status",
 ]
 
@@ -40,6 +41,7 @@ def collect(config_path: str | Path) -> list[dict]:
             "bleu": None,
             "chrf": None,
             "checkpoint_path": str(ckpt_path),
+            "metrics_path": str(metrics_path),
             "status": "missing",
         }
 
