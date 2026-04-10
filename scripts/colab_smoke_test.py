@@ -45,39 +45,47 @@ def download_samanantar_small():
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / "samanantar_hi_en_small.tsv"
     
-    if output_file.exists():
+    if output_file.exists() and output_file.stat().st_size > 0:
         print(f"✅ File already exists: {output_file}")
         return str(output_file)
     
     try:
         print("Downloading from ai4bharat/samanantar...")
-        ds = load_dataset("ai4bharat/samanantar", "hi", split="train", streaming=False)
-        print(f"✅ Downloaded {len(ds)} pairs")
+        ds = load_dataset("ai4bharat/samanantar", "hi", split="train")
+        print(f"✅ Downloaded dataset with {len(ds)} pairs")
         
-        # Take only first 500 for smoke test
-        test_size = min(500, len(ds))
-        print(f"Taking first {test_size} pairs for smoke test...")
+        # Take only first 300 for smoke test
+        test_size = min(300, len(ds))
+        print(f"Extracting first {test_size} pairs...")
         
+        pair_count = 0
         with open(output_file, "w", encoding="utf-8") as f:
             for i, item in enumerate(ds):
-                if i >= test_size:
+                if pair_count >= test_size:
                     break
-                # Handle both 'translation' dict and flat columns
-                if isinstance(item.get("translation"), dict):
-                    src = item["translation"].get("hi", "")
-                    tgt = item["translation"].get("en", "")
-                else:
-                    src = item.get("hi", "")
-                    tgt = item.get("en", "")
                 
-                if src and tgt:
+                # Handle translation dict format
+                if isinstance(item.get("translation"), dict):
+                    src = item["translation"].get("hi", "").strip()
+                    tgt = item["translation"].get("en", "").strip()
+                elif "hi" in item and "en" in item:
+                    src = str(item["hi"]).strip()
+                    tgt = str(item["en"]).strip()
+                else:
+                    continue
+                
+                # Validate pair
+                if src and tgt and len(src.split()) >= 2 and len(tgt.split()) >= 2:
                     f.write(f"{src}\t{tgt}\n")
+                    pair_count += 1
         
-        print(f"✅ Saved to {output_file}")
-        return str(output_file)
+        print(f"✅ Saved {pair_count} valid pairs to {output_file}")
+        return str(output_file) if pair_count > 0 else None
         
     except Exception as e:
         print(f"❌ Error downloading: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def clean_data(input_file):
