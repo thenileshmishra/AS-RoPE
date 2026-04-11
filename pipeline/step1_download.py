@@ -92,8 +92,8 @@ def download_samanantar(output_tsv: Path, sample_size: int, force: bool = False)
     print(f"[step1] detected hi={hi_key} en={en_key} translation_dict={is_translation_dict}")
 
     kept = 0
-    with open(output_tsv, "w", encoding="utf-8") as f:
-        for ex in ds:
+    with open(output_tsv, "w", encoding="utf-8", buffering=1024*1024) as f:
+        for i, ex in enumerate(ds):
             if is_translation_dict:
                 tr = ex["translation"]
                 hi = (tr.get(hi_key) or "").strip()
@@ -107,9 +107,17 @@ def download_samanantar(output_tsv: Path, sample_size: int, force: bool = False)
             en = " ".join(en.split())
             f.write(f"{hi}\t{en}\n")
             kept += 1
+            if (kept + 1) % 100000 == 0:
+                print(f"[step1] progress: {kept:,} pairs written...")
 
-    size_mb = output_tsv.stat().st_size / 1e6
-    print(f"[step1] wrote {kept:,} pairs -> {output_tsv} ({size_mb:.1f} MB)")
+    try:
+        size_mb = output_tsv.stat().st_size / 1e6
+        print(f"[step1] wrote {kept:,} pairs -> {output_tsv} ({size_mb:.1f} MB)")
+    except FileNotFoundError:
+        if kept > 0:
+            print(f"[step1] wrote {kept:,} pairs -> {output_tsv} (file stat unavailable, likely network delay)")
+        else:
+            raise RuntimeError(f"Failed to write {output_tsv}: no pairs kept and file not found")
     return output_tsv
 
 
