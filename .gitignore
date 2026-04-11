@@ -63,5 +63,8 @@ docs/presentation.*
 docs/paper_submission.*
 !docs/paper_submission.tex
 
-# Experiment outputs
+# Experiment outputs (written to Google Drive, not tracked)
 results/
+outputs/
+raw_data/
+processed_data/
