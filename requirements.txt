@@ -2,4 +2,5 @@ torch
 tokenizers
 datasets
 transformers
+sentence-transformers
 sacrebleu
