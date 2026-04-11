@@ -1,7 +1,7 @@
 """Step 1 — Download raw datasets to Google Drive.
 
 Downloads:
-  1. Samanantar (Hindi ↔ English), capped at SAMPLE_SIZE pairs (default 2M).
+    1. Samanantar (Hindi ↔ English), all pairs by default (or capped via --sample-size).
   2. FLORES-200 devtest split for evaluation.
 
 Both datasets are written as raw TSV files (``src\\ttgt`` per line) directly
@@ -9,7 +9,7 @@ to Google Drive under :mod:`pipeline.paths`. This step performs NO cleaning
 or filtering — that is Step 2's responsibility.
 
 Usage (from the Colab notebook):
-    !python -m pipeline.step1_download --sample-size 2000000
+    !python -m pipeline.step1_download
 
 The script is idempotent: if a non-empty output file already exists it is
 left alone unless ``--force`` is passed.
@@ -30,7 +30,7 @@ from pipeline import paths
 
 SAMANANTAR_REPO = "ai4bharat/samanantar"
 SAMANANTAR_CONFIG = "hi"
-DEFAULT_SAMPLE_SIZE = 2_000_000
+DEFAULT_SAMPLE_SIZE = 0
 SEED = 42
 
 FLORES_TAR_URL = "https://dl.fbaipublicfiles.com/nllb/flores200_dataset.tar.gz"
@@ -140,10 +140,23 @@ def download_flores(output_tsv: Path, force: bool = False) -> Path:
     src_rel = f"flores200_dataset/{FLORES_SPLIT}/{FLORES_SRC_LANG}.{FLORES_SPLIT}"
     tgt_rel = f"flores200_dataset/{FLORES_SPLIT}/{FLORES_TGT_LANG}.{FLORES_SPLIT}"
 
+    def _resolve_member_name(tar: tarfile.TarFile, expected_rel: str) -> str:
+        try:
+            tar.getmember(expected_rel)
+            return expected_rel
+        except KeyError:
+            suffix = f"/{FLORES_SPLIT}/{Path(expected_rel).name}"
+            for name in tar.getnames():
+                if name.endswith(suffix):
+                    return name
+            raise RuntimeError(f"Missing {expected_rel} in tarball")
+
     print(f"[step1] extracting flores200 ({FLORES_SPLIT}) ...")
     with tarfile.open(tar_path, mode="r:gz") as tar:
-        src_f = tar.extractfile(src_rel)
-        tgt_f = tar.extractfile(tgt_rel)
+        src_member = _resolve_member_name(tar, src_rel)
+        tgt_member = _resolve_member_name(tar, tgt_rel)
+        src_f = tar.extractfile(src_member)
+        tgt_f = tar.extractfile(tgt_member)
         if src_f is None or tgt_f is None:
             raise RuntimeError(f"Missing {src_rel} or {tgt_rel} in tarball")
         src_lines = src_f.read().decode("utf-8").splitlines()
@@ -174,7 +187,7 @@ def main(argv: list[str] | None = None) -> None:
         "--sample-size",
         type=int,
         default=DEFAULT_SAMPLE_SIZE,
-        help="Max Samanantar pairs to download (default: 2,000,000)",
+        help="Max Samanantar pairs to download (default: all rows; set >0 to cap)",
     )
     parser.add_argument("--force", action="store_true", help="Redownload even if outputs exist")
     parser.add_argument(
