@@ -1,4 +1,8 @@
-"""Decoder-only GPT with sinusoidal positional encoding."""
+"""Decoder-only GPT with pluggable positional encoding.
+
+Currently implemented: sinusoidal, none.
+Stubs for: learned, rope, alibi — adding them requires only a new PE module.
+"""
 
 from __future__ import annotations
 
@@ -62,7 +66,15 @@ class TransformerBlock(nn.Module):
 
 
 class GPT(nn.Module):
-    """Decoder-only transformer with sinusoidal absolute positional encoding."""
+    """Decoder-only transformer with pluggable positional encoding.
+
+    Supported ``pe_type`` values:
+      - ``"sinusoidal"`` — fixed sinusoidal (Vaswani et al., 2017).
+      - ``"none"``       — no positional encoding.
+      - ``"learned"``    — stub (raises ``NotImplementedError``).
+      - ``"rope"``       — stub (raises ``NotImplementedError``).
+      - ``"alibi"``      — stub (raises ``NotImplementedError``).
+    """
 
     def __init__(
         self,
@@ -72,14 +84,39 @@ class GPT(nn.Module):
         n_heads: int = 8,
         max_seq_len: int = 128,
         mlp_ratio: int = 4,
+        pe_type: str = "sinusoidal",
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.max_seq_len = max_seq_len
+        self.pe_type = pe_type
 
         self.token_emb = nn.Embedding(vocab_size, d_model)
-        self.pos_emb = SinusoidalPositionalEmbedding(d_model, max_seq_len)
+
+        if pe_type == "sinusoidal":
+            self.pos_emb = SinusoidalPositionalEmbedding(d_model, max_seq_len)
+        elif pe_type == "learned":
+            self.pos_emb = nn.Embedding(max_seq_len, d_model)
+            raise NotImplementedError(
+                "pe_type='learned' is not yet implemented. "
+                "Add LearnedPE to src/positional_encodings.py and wire it here."
+            )
+        elif pe_type in ("rope", "alibi"):
+            self.pos_emb = None  # PE is handled inside attention layers
+            raise NotImplementedError(
+                f"pe_type='{pe_type}' is not yet implemented. "
+                f"Add the corresponding attention module to src/positional_encodings.py "
+                f"and replace self.blocks here."
+            )
+        elif pe_type == "none":
+            self.pos_emb = None
+        else:
+            raise ValueError(
+                f"Unknown pe_type='{pe_type}'. "
+                f"Choices: sinusoidal, learned, rope, alibi, none"
+            )
+
         self.blocks = nn.ModuleList(
             [TransformerBlock(d_model, n_heads, mlp_ratio) for _ in range(n_layers)]
         )
@@ -95,7 +132,12 @@ class GPT(nn.Module):
             raise ValueError(
                 f"Input sequence length {seq_len} exceeds max_seq_len={self.max_seq_len}"
             )
-        x = self.token_emb(input_ids) + self.pos_emb(seq_len)
+
+        if self.pos_emb is not None:
+            x = self.token_emb(input_ids) + self.pos_emb(seq_len)
+        else:
+            x = self.token_emb(input_ids)
+
         for block in self.blocks:
             x = block(x)
         x = self.final_ln(x)

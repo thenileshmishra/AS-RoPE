@@ -4,3 +4,5 @@ datasets
 transformers
 sentence-transformers
 sacrebleu
+bert-score
+unbabel-comet
