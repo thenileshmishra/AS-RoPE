@@ -35,7 +35,11 @@ from src.train import TrainConfig, train
 def _detect_device() -> str:
     if torch.cuda.is_available():
         name = torch.cuda.get_device_name(0)
-        mem_gb = torch.cuda.get_device_properties(0).total_mem / 1e9
+        props = torch.cuda.get_device_properties(0)
+        total_mem = getattr(props, "total_memory", None)
+        if total_mem is None:
+            total_mem = getattr(props, "total_mem")
+        mem_gb = total_mem / 1e9
         print(f"[step3] device=cuda ({name}, {mem_gb:.1f} GB)")
         return "cuda"
     print("[step3] device=cpu")
