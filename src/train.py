@@ -114,40 +114,6 @@ def _save_checkpoint(
     )
 
 
-def _enable_flash_attention(model) -> None:
-    """Replace manual attention with F.scaled_dot_product_attention (Flash Attention)."""
-    if not (torch.cuda.is_available() and hasattr(F, "scaled_dot_product_attention")):
-        return
-
-    # Get blocks from model or compiled model
-    blocks = getattr(model, "blocks", None)
-    if blocks is None:
-        orig = getattr(model, "_orig_mod", None)
-        if orig is not None:
-            blocks = getattr(orig, "blocks", None)
-    if blocks is None:
-        return
-
-    for block in blocks:
-        attn = block.attn
-        original_forward = attn.forward
-
-        def make_flash_forward(a):
-            def flash_forward(x: torch.Tensor) -> torch.Tensor:
-                bsz, seq_len, _ = x.shape
-                q = a.q_proj(x).view(bsz, seq_len, a.n_heads, a.head_dim).transpose(1, 2)
-                k = a.k_proj(x).view(bsz, seq_len, a.n_heads, a.head_dim).transpose(1, 2)
-                v = a.v_proj(x).view(bsz, seq_len, a.n_heads, a.head_dim).transpose(1, 2)
-                out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-                out = out.transpose(1, 2).contiguous().view(bsz, seq_len, a.d_model)
-                return a.out_proj(out)
-            return flash_forward
-
-        attn.forward = make_flash_forward(attn)
-
-    print("[train] Flash Attention (SDPA) enabled")
-
-
 def train(cfg: TrainConfig) -> dict:
     torch.manual_seed(cfg.seed)
     random.seed(cfg.seed)
@@ -225,9 +191,6 @@ def train(cfg: TrainConfig) -> dict:
             print("[train] torch.compile enabled")
         except Exception as e:
             print(f"[train] torch.compile failed ({e}), continuing without")
-
-    # Flash Attention
-    _enable_flash_attention(model)
 
     # Optimizer & scheduler
     optimizer = torch.optim.AdamW(

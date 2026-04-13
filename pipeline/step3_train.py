@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--n-heads", type=int, default=8)
     parser.add_argument(
         "--pe-type",
-        choices=["sinusoidal", "learned", "rope", "alibi", "none"],
+        choices=["sinusoidal", "rope", "asrope", "none"],
         default="sinusoidal",
     )
 
