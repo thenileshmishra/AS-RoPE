@@ -72,3 +72,37 @@ class MTDatasetV2(Dataset):
 def build_tokenizer_v2(name_or_path: str = "ai4bharat/IndicBART"):
     """Thin wrapper around build_mt_tokenizer for naming symmetry."""
     return build_mt_tokenizer(name_or_path)
+
+
+class MTDatasetCached(Dataset):
+    """Reads pre-tokenized flat int32 tensors produced by step2b.
+
+    Expects a torch.save dict with keys:
+        input_ids_flat: int32 Tensor [total_tokens]
+        labels_flat:    int32 Tensor [total_tokens]
+        offsets:        int64 Tensor [n_examples + 1]
+        meta:           dict
+
+    __getitem__ slices the flat tensors — no tokenizer calls in the training hot path.
+    """
+
+    def __init__(self, tokenized_path):
+        import torch
+
+        blob = torch.load(tokenized_path, map_location="cpu", weights_only=False)
+        self.input_ids_flat = blob["input_ids_flat"]
+        self.labels_flat = blob["labels_flat"]
+        self.offsets = blob["offsets"]
+        self.meta = blob.get("meta", {})
+        self._n = int(self.offsets.numel() - 1)
+
+    def __len__(self) -> int:
+        return self._n
+
+    def __getitem__(self, idx: int) -> dict:
+        start = int(self.offsets[idx].item())
+        end = int(self.offsets[idx + 1].item())
+        return {
+            "input_ids": self.input_ids_flat[start:end].tolist(),
+            "labels": self.labels_flat[start:end].tolist(),
+        }

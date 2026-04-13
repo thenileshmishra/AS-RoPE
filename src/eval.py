@@ -185,17 +185,23 @@ def compute_all_metrics(
     preds: list[str],
     refs: list[str],
     sources: list[str] | None = None,
+    metrics_mode: str = "full",
 ) -> dict:
-    """Compute comprehensive MT metrics: BLEU, chrF, TER, BERTScore, COMET,
-    length ratio, and repetition rate."""
+    """Compute MT metrics.
+
+    metrics_mode="fast": BLEU + chrF + TER + length_ratio + repetition_rate only.
+    metrics_mode="full": also runs BERTScore and COMET (slow, downloads models).
+    """
     if len(preds) != len(refs):
         raise ValueError(f"Pred/ref count mismatch: {len(preds)} vs {len(refs)}")
     if not preds:
         raise ValueError("Empty prediction list")
+    if metrics_mode not in ("fast", "full"):
+        raise ValueError(f"metrics_mode must be 'fast' or 'full', got {metrics_mode!r}")
 
-    metrics: dict = {"num_samples": len(preds)}
+    metrics: dict = {"num_samples": len(preds), "metrics_mode": metrics_mode}
 
-    # --- sacrebleu metrics ---
+    # --- sacrebleu metrics (always on, fast) ---
     from sacrebleu.metrics import BLEU, CHRF, TER
 
     bleu_m = BLEU()
@@ -213,40 +219,38 @@ def compute_all_metrics(
     metrics["chrf_signature"] = str(chrf_m.get_signature())
     metrics["ter_signature"] = str(ter_m.get_signature())
 
-    # --- BERTScore ---
-    try:
-        from bert_score import score as bs_score
+    metrics["bertscore_f1"] = None
+    metrics["comet"] = None
 
-        _, _, f1 = bs_score(preds, refs, lang="en", verbose=False)
-        metrics["bertscore_f1"] = float(f1.mean().item())
-    except ImportError:
-        warnings.warn("bert-score not installed; skipping BERTScore")
-        metrics["bertscore_f1"] = None
-    except Exception as e:
-        warnings.warn(f"BERTScore failed: {e}")
-        metrics["bertscore_f1"] = None
-
-    # --- COMET ---
-    if sources is not None:
+    if metrics_mode == "full":
+        # --- BERTScore ---
         try:
-            from comet import download_model, load_from_checkpoint
+            from bert_score import score as bs_score
 
-            model_path = download_model("Unbabel/wmt22-comet-da")
-            comet_model = load_from_checkpoint(model_path)
-            comet_data = [
-                {"src": s, "mt": p, "ref": r}
-                for s, p, r in zip(sources, preds, refs)
-            ]
-            comet_output = comet_model.predict(comet_data, batch_size=64, gpus=0)
-            metrics["comet"] = float(comet_output.system_score)
+            _, _, f1 = bs_score(preds, refs, lang="en", verbose=False)
+            metrics["bertscore_f1"] = float(f1.mean().item())
         except ImportError:
-            warnings.warn("unbabel-comet not installed; skipping COMET")
-            metrics["comet"] = None
+            warnings.warn("bert-score not installed; skipping BERTScore")
         except Exception as e:
-            warnings.warn(f"COMET failed: {e}")
-            metrics["comet"] = None
-    else:
-        metrics["comet"] = None
+            warnings.warn(f"BERTScore failed: {e}")
+
+        # --- COMET ---
+        if sources is not None:
+            try:
+                from comet import download_model, load_from_checkpoint
+
+                model_path = download_model("Unbabel/wmt22-comet-da")
+                comet_model = load_from_checkpoint(model_path)
+                comet_data = [
+                    {"src": s, "mt": p, "ref": r}
+                    for s, p, r in zip(sources, preds, refs)
+                ]
+                comet_output = comet_model.predict(comet_data, batch_size=64, gpus=0)
+                metrics["comet"] = float(comet_output.system_score)
+            except ImportError:
+                warnings.warn("unbabel-comet not installed; skipping COMET")
+            except Exception as e:
+                warnings.warn(f"COMET failed: {e}")
 
     # --- Length ratio ---
     ratios = [
@@ -263,8 +267,8 @@ def compute_all_metrics(
 
 
 def compute_bleu_chrf(preds: list[str], refs: list[str]) -> dict:
-    """Backward-compatible wrapper that calls compute_all_metrics."""
-    return compute_all_metrics(preds, refs)
+    """Backward-compatible wrapper that calls compute_all_metrics in fast mode."""
+    return compute_all_metrics(preds, refs, metrics_mode="fast")
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +315,7 @@ def evaluate_checkpoint_v2(
     device: str = "cpu",
     decoding: str = "beam",
     beam_size: int = 5,
+    metrics_mode: str = "full",
 ) -> dict:
     """Decode + evaluate with comprehensive metrics. Saves all artifacts."""
     output_dir = Path(output_dir)
@@ -368,7 +373,7 @@ def evaluate_checkpoint_v2(
         for s in samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
 
-    metrics = compute_all_metrics(preds, refs, sources=sources)
+    metrics = compute_all_metrics(preds, refs, sources=sources, metrics_mode=metrics_mode)
     metrics["checkpoint"] = str(checkpoint_path)
     metrics["eval_tsv"] = str(eval_tsv)
     metrics["decoding"] = decoding
@@ -409,34 +414,43 @@ def compare_decoding(
     max_new_tokens: int = 128,
     device: str = "cpu",
     beam_sizes: list[int] | None = None,
+    metrics_mode: str = "full",
 ) -> dict:
-    """Run greedy + multiple beam sizes and produce a comparison table."""
-    if beam_sizes is None:
-        beam_sizes = [1, 4, 5, 8]
+    """Run greedy (+ optional beam) and produce a comparison table.
 
+    metrics_mode="fast": greedy only, sacrebleu metrics only. Used for the
+        3 ablation runs. Overrides beam_sizes.
+    metrics_mode="full": greedy + beam_sizes, all metrics including COMET.
+        Used once on the winning PE type.
+    """
     output_dir = Path(output_dir)
     results: dict[str, dict] = {}
 
-    # Greedy
+    # Greedy — always run
     greedy_dir = output_dir / "greedy"
-    print("[compare] running greedy decoding ...")
+    print(f"[compare] running greedy decoding (metrics_mode={metrics_mode}) ...")
     results["greedy"] = evaluate_checkpoint_v2(
         checkpoint_path, eval_tsv, greedy_dir,
         max_new_tokens=max_new_tokens, device=device, decoding="greedy",
+        metrics_mode=metrics_mode,
     )
 
-    # Beam variants
-    for bs in beam_sizes:
-        if bs == 1:
-            continue  # beam_size=1 is equivalent to greedy
-        key = f"beam_{bs}"
-        beam_dir = output_dir / key
-        print(f"[compare] running beam search (k={bs}) ...")
-        results[key] = evaluate_checkpoint_v2(
-            checkpoint_path, eval_tsv, beam_dir,
-            max_new_tokens=max_new_tokens, device=device,
-            decoding="beam", beam_size=bs,
-        )
+    # Beam variants — skipped entirely in fast mode
+    if metrics_mode == "full":
+        if beam_sizes is None:
+            beam_sizes = [5]
+        for bs in beam_sizes:
+            if bs == 1:
+                continue
+            key = f"beam_{bs}"
+            beam_dir = output_dir / key
+            print(f"[compare] running beam search (k={bs}) ...")
+            results[key] = evaluate_checkpoint_v2(
+                checkpoint_path, eval_tsv, beam_dir,
+                max_new_tokens=max_new_tokens, device=device,
+                decoding="beam", beam_size=bs,
+                metrics_mode=metrics_mode,
+            )
 
     # Build comparison table
     header_keys = ["bleu", "chrf", "ter", "comet", "bertscore_f1"]
