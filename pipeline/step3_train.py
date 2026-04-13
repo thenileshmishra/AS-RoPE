@@ -52,8 +52,8 @@ def main(argv: list[str] | None = None) -> None:
     # Model architecture
     parser.add_argument("--tokenizer", default="ai4bharat/IndicBART")
     parser.add_argument("--max-seq-len", type=int, default=256)
-    parser.add_argument("--d-model", type=int, default=512)
-    parser.add_argument("--n-layers", type=int, default=12)
+    parser.add_argument("--d-model", type=int, default=256)
+    parser.add_argument("--n-layers", type=int, default=6)
     parser.add_argument("--n-heads", type=int, default=8)
     parser.add_argument(
         "--pe-type",

@@ -31,8 +31,8 @@ class TrainConfig:
     logs_dir: str
     tokenizer: str = "ai4bharat/IndicBART"
     max_seq_len: int = 256
-    d_model: int = 512
-    n_layers: int = 12
+    d_model: int = 256
+    n_layers: int = 6
     n_heads: int = 8
     batch_size: int = 64
     learning_rate: float = 5e-4
