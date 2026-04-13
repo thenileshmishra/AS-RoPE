@@ -52,6 +52,8 @@ def greedy_decode_one(
     max_new_tokens: int,
     max_seq_len: int,
     device: str,
+    repetition_penalty: float = 1.3,
+    no_repeat_ngram_size: int = 4,
 ) -> str:
     sep_id = tokenizer.sep_token_id if tokenizer.sep_token_id is not None else tokenizer.eos_token_id
     eos_id = tokenizer.eos_token_id
@@ -63,11 +65,31 @@ def greedy_decode_one(
     prompt = src_ids + [sep_id]
     input_ids = torch.tensor([prompt], dtype=torch.long, device=device)
     generated: list[int] = []
+
     for _ in range(max_new_tokens):
         if input_ids.shape[1] >= max_seq_len:
             break
         logits, _ = model(input_ids)
-        next_id = int(logits[0, -1].argmax().item())
+        next_logits = logits[0, -1].clone()
+
+        # Repetition penalty: downscale logits for tokens already generated
+        if repetition_penalty != 1.0 and generated:
+            seen = set(generated)
+            for tid in seen:
+                if next_logits[tid] > 0:
+                    next_logits[tid] /= repetition_penalty
+                else:
+                    next_logits[tid] *= repetition_penalty
+
+        # No-repeat n-gram blocking
+        if no_repeat_ngram_size > 1 and len(generated) >= no_repeat_ngram_size - 1:
+            ngram_prefix = tuple(generated[-(no_repeat_ngram_size - 1):])
+            for i in range(len(generated) - no_repeat_ngram_size + 1):
+                if tuple(generated[i:i + no_repeat_ngram_size - 1]) == ngram_prefix:
+                    blocked = generated[i + no_repeat_ngram_size - 1]
+                    next_logits[blocked] = float("-inf")
+
+        next_id = int(next_logits.argmax().item())
         if next_id == eos_id:
             break
         generated.append(next_id)
