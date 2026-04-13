@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from src.asrope import ASRotaryEmbedding
+from src.asrope2 import ASRotaryEmbeddingV2
 from src.rope import RotaryEmbedding
 from src.sinusoidal import SinusoidalPositionalEmbedding
 
@@ -39,13 +40,26 @@ class CausalSelfAttention(nn.Module):
         if pe_type == "rope":
             self.rope = RotaryEmbedding(self.head_dim, max_seq_len)
             self.freq_gates = None
+            self.freq_gates_q = None
+            self.freq_gates_k = None
         elif pe_type == "asrope":
             self.rope = ASRotaryEmbedding(d_model, n_heads, self.head_dim, max_seq_len)
             # Per-layer learnable spectral gates, initialized so theta ≈ base RoPE.
             self.freq_gates = nn.Parameter(torch.ones(d_model // 2))
+            self.freq_gates_q = None
+            self.freq_gates_k = None
+        elif pe_type == "asrope2":
+            n_freqs = self.head_dim // 2
+            self.rope = ASRotaryEmbeddingV2(d_model, n_heads, self.head_dim, max_seq_len)
+            # Separate per-head gates for Q and K — independent frequency adaptation.
+            self.freq_gates = None
+            self.freq_gates_q = nn.Parameter(torch.ones(n_heads, n_freqs))
+            self.freq_gates_k = nn.Parameter(torch.ones(n_heads, n_freqs))
         else:
             self.rope = None
             self.freq_gates = None
+            self.freq_gates_q = None
+            self.freq_gates_k = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bsz, seq_len, _ = x.shape
@@ -57,6 +71,8 @@ class CausalSelfAttention(nn.Module):
             q, k = self.rope(q, k)
         elif self.pe_type == "asrope":
             q, k = self.rope(q, k, self.freq_gates)
+        elif self.pe_type == "asrope2":
+            q, k = self.rope(q, k, self.freq_gates_q, self.freq_gates_k)
 
         out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         out = out.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
@@ -95,11 +111,12 @@ class GPT(nn.Module):
     pe_type:
       - "sinusoidal": fixed sinusoidal added to input embeddings.
       - "rope":       rotary embeddings applied to q, k inside each attention layer.
-      - "asrope":     AS-RoPE with per-layer learnable spectral gates.
+      - "asrope":     AS-RoPE with per-layer shared Q/K spectral gates.
+      - "asrope2":    AS-RoPE v2 with decoupled per-head Q and K gates.
       - "none":       no positional encoding.
     """
 
-    _PE_CHOICES = ("sinusoidal", "rope", "asrope", "none")
+    _PE_CHOICES = ("sinusoidal", "rope", "asrope", "asrope2", "none")
 
     def __init__(
         self,
