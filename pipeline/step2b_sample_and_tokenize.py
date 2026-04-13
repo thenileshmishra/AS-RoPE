@@ -32,11 +32,11 @@ from tqdm import tqdm
 
 from pipeline import paths
 from src.dataset import load_pairs
-from src.dataset_v2 import build_mt_example_v2
 from src.tokenizer_utils import build_mt_tokenizer, verify_token_ids
 
 
 LABEL_IGNORE = -100
+CHUNK = 50_000  # pairs per batch_encode call — amortizes Python overhead
 
 
 def _tokenize_split(
@@ -45,21 +45,60 @@ def _tokenize_split(
     max_seq_len: int,
     desc: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+    """Batch-tokenize with the HuggingFace tokenizer for ~50-100x speedup vs per-sample calls.
+
+    Mirrors the layout of build_mt_example_v2: ``[<2hi> src] <sep> [<2en> tgt] <eos>``
+    with src tokens + SEP masked to -100.
+    """
+    sep_id = tokenizer.sep_token_id
+    eos_id = tokenizer.eos_token_id
+
+    vocab = tokenizer.get_vocab()
+    hi_tag = "<2hi>" if "<2hi>" in vocab else ""
+    en_tag = "<2en>" if "<2en>" in vocab else ""
+
     input_flat: list[int] = []
     label_flat: list[int] = []
     offsets: list[int] = [0]
     lengths: list[int] = []
 
-    for src, tgt in tqdm(pairs, desc=desc, unit="pair"):
-        ex = build_mt_example_v2(src, tgt, tokenizer, max_seq_len)
-        input_ids = ex["input_ids"]
-        labels = ex["labels"]
-        if not input_ids:
-            continue
-        input_flat.extend(input_ids)
-        label_flat.extend(labels)
-        offsets.append(len(input_flat))
-        lengths.append(len(input_ids))
+    n = len(pairs)
+    pbar = tqdm(total=n, desc=desc, unit="pair")
+    for i in range(0, n, CHUNK):
+        chunk = pairs[i : i + CHUNK]
+        src_texts = [
+            (f"{hi_tag} {s}".strip() if hi_tag else s) for s, _ in chunk
+        ]
+        tgt_texts = [
+            (f"{en_tag} {t}".strip() if en_tag else t) for _, t in chunk
+        ]
+        src_enc = tokenizer(src_texts, add_special_tokens=False)["input_ids"]
+        tgt_enc = tokenizer(tgt_texts, add_special_tokens=False)["input_ids"]
+
+        budget = max(2, max_seq_len - 2)
+        half = budget // 2
+        for src_ids, tgt_ids in zip(src_enc, tgt_enc):
+            if not src_ids or not tgt_ids:
+                continue
+            if len(src_ids) + len(tgt_ids) > budget:
+                if len(src_ids) > half:
+                    src_ids = src_ids[:half]
+                remaining = budget - len(src_ids)
+                if len(tgt_ids) > remaining:
+                    tgt_ids = tgt_ids[:remaining]
+
+            full = src_ids + [sep_id] + tgt_ids + [eos_id]
+            input_ids = full[:-1]
+            labels = full[1:]
+            src_len = len(src_ids)
+            labels = [LABEL_IGNORE] * src_len + labels[src_len:]
+
+            input_flat.extend(input_ids)
+            label_flat.extend(labels)
+            offsets.append(len(input_flat))
+            lengths.append(len(input_ids))
+        pbar.update(len(chunk))
+    pbar.close()
 
     input_t = torch.tensor(input_flat, dtype=torch.int32)
     label_t = torch.tensor(label_flat, dtype=torch.int32)
