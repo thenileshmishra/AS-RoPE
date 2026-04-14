@@ -52,6 +52,7 @@ class TrainConfig:
     dataloader_workers: int = 2
     pin_memory: bool = True
     pe_type: str = "sinusoidal"
+    sep_id: int | None = None  # required for pe_type='dsrope'
     # --- minimal-resource additions ---
     use_cached_dataset: bool = False  # True => load pre-tokenized .pt files
     val_subset_size: int = 500        # cap in-loop eval at this many examples
@@ -175,12 +176,16 @@ def train(cfg: TrainConfig) -> dict:
         meta = train_ds.meta
         pad_id = int(meta["pad_id"])
         vocab_size = int(meta["vocab_size"])
-        print(f"[train] vocab_size={vocab_size} pad_id={pad_id} (from cached meta)")
+        if cfg.sep_id is None and "sep_id" in meta and meta["sep_id"] is not None:
+            cfg.sep_id = int(meta["sep_id"])
+        print(f"[train] vocab_size={vocab_size} pad_id={pad_id} sep_id={cfg.sep_id} (from cached meta)")
     else:
         tokenizer = build_mt_tokenizer(cfg.tokenizer)
         pad_id = tokenizer.pad_token_id
         vocab_size = len(tokenizer)
-        print(f"[train] vocab_size={vocab_size} (tokenizer={cfg.tokenizer})")
+        if cfg.sep_id is None:
+            cfg.sep_id = tokenizer.sep_token_id
+        print(f"[train] vocab_size={vocab_size} sep_id={cfg.sep_id} (tokenizer={cfg.tokenizer})")
         train_ds, val_ds = _build_datasets(cfg, tokenizer)
 
     if cfg.val_subset_size and len(val_ds) > cfg.val_subset_size:
@@ -221,6 +226,7 @@ def train(cfg: TrainConfig) -> dict:
         n_heads=cfg.n_heads,
         max_seq_len=cfg.max_seq_len,
         pe_type=cfg.pe_type,
+        sep_id=cfg.sep_id,
     ).to(cfg.device)
 
     n_params = sum(p.numel() for p in model.parameters())

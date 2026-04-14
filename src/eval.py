@@ -34,6 +34,7 @@ def load_checkpoint(checkpoint_path: str | Path, device: str) -> tuple[GPT, dict
         n_heads=int(config["n_heads"]),
         max_seq_len=int(config["max_seq_len"]),
         pe_type=str(config.get("pe_type", config.get("positional_encoding", "sinusoidal"))),
+        sep_id=config.get("sep_id"),
     ).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()

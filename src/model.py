@@ -1,6 +1,15 @@
 """Decoder-only GPT with pluggable positional encoding.
 
-Supported pe_type values: sinusoidal, rope, asrope, none.
+Supported pe_type values:
+  - sinusoidal: fixed sinusoidal added to input embeddings (Vaswani 2017)
+  - rope:       standard RoPE (Su 2021)
+  - asrope:     AS-RoPE — per-layer learnable Q=K spectral gates
+  - asrope2:    AS-RoPE v2 — per-head decoupled Q/K spectral gates
+  - asrope3:    PA-RoPE — asrope2 + per-(head, freq) learnable phase offsets
+  - ccrope:     Content-Conditioned RoPE — gates derived from causal content summary
+  - dsrope:     Dual-Stream RoPE — blend absolute + language-local positions per head
+  - none:       no positional encoding
+
 Attention uses F.scaled_dot_product_attention natively (Flash/mem-efficient on CUDA).
 """
 
@@ -12,6 +21,9 @@ from torch import nn
 
 from src.asrope import ASRotaryEmbedding
 from src.asrope2 import ASRotaryEmbeddingV2
+from src.ccrope import CCRotaryEmbedding
+from src.dsrope import DSRotaryEmbedding
+from src.parope import PARotaryEmbedding
 from src.rope import RotaryEmbedding
 from src.sinusoidal import SinusoidalPositionalEmbedding
 
@@ -31,37 +43,62 @@ class CausalSelfAttention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
         self.pe_type = pe_type
+        n_freqs = self.head_dim // 2
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
+        # Defaults — most variants leave these None
+        self.rope = None
+        self.freq_gates = None
+        self.freq_gates_q = None
+        self.freq_gates_k = None
+        self.phase_q = None
+        self.phase_k = None
+        self.alpha_q = None
+        self.alpha_k = None
+        self.gate_proj_q = None
+        self.gate_proj_k = None
+
         if pe_type == "rope":
             self.rope = RotaryEmbedding(self.head_dim, max_seq_len)
-            self.freq_gates = None
-            self.freq_gates_q = None
-            self.freq_gates_k = None
         elif pe_type == "asrope":
             self.rope = ASRotaryEmbedding(d_model, n_heads, self.head_dim, max_seq_len)
-            # Per-layer learnable spectral gates, initialized so theta ≈ base RoPE.
             self.freq_gates = nn.Parameter(torch.ones(d_model // 2))
-            self.freq_gates_q = None
-            self.freq_gates_k = None
         elif pe_type == "asrope2":
-            n_freqs = self.head_dim // 2
             self.rope = ASRotaryEmbeddingV2(d_model, n_heads, self.head_dim, max_seq_len)
-            # Separate per-head gates for Q and K — independent frequency adaptation.
-            self.freq_gates = None
             self.freq_gates_q = nn.Parameter(torch.ones(n_heads, n_freqs))
             self.freq_gates_k = nn.Parameter(torch.ones(n_heads, n_freqs))
-        else:
-            self.rope = None
-            self.freq_gates = None
-            self.freq_gates_q = None
-            self.freq_gates_k = None
+        elif pe_type == "asrope3":
+            # PA-RoPE: AS-RoPE v2 + learnable phase offsets (zero-init)
+            self.rope = PARotaryEmbedding(d_model, n_heads, self.head_dim, max_seq_len)
+            self.freq_gates_q = nn.Parameter(torch.ones(n_heads, n_freqs))
+            self.freq_gates_k = nn.Parameter(torch.ones(n_heads, n_freqs))
+            self.phase_q = nn.Parameter(torch.zeros(n_heads, n_freqs))
+            self.phase_k = nn.Parameter(torch.zeros(n_heads, n_freqs))
+        elif pe_type == "ccrope":
+            # CC-RoPE: content-conditioned gates, projections zero-init -> gates ~ 1.0
+            self.rope = CCRotaryEmbedding(d_model, n_heads, self.head_dim, max_seq_len)
+            self.gate_proj_q = nn.Linear(d_model, n_heads * n_freqs, bias=False)
+            self.gate_proj_k = nn.Linear(d_model, n_heads * n_freqs, bias=False)
+            nn.init.zeros_(self.gate_proj_q.weight)
+            nn.init.zeros_(self.gate_proj_k.weight)
+        elif pe_type == "dsrope":
+            # DS-RoPE: dual-stream — alpha blends absolute and language-local positions.
+            # alpha=0 logit -> sigmoid=0.5 -> equal blend at init.
+            self.rope = DSRotaryEmbedding(d_model, n_heads, self.head_dim, max_seq_len)
+            self.alpha_q = nn.Parameter(torch.zeros(n_heads, n_freqs))
+            self.alpha_k = nn.Parameter(torch.zeros(n_heads, n_freqs))
+            self.freq_gates_q = nn.Parameter(torch.zeros(n_heads, n_freqs))  # softplus(0)~0.69
+            self.freq_gates_k = nn.Parameter(torch.zeros(n_heads, n_freqs))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        pos_local: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         bsz, seq_len, _ = x.shape
         q = self.q_proj(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
@@ -73,6 +110,29 @@ class CausalSelfAttention(nn.Module):
             q, k = self.rope(q, k, self.freq_gates)
         elif self.pe_type == "asrope2":
             q, k = self.rope(q, k, self.freq_gates_q, self.freq_gates_k)
+        elif self.pe_type == "asrope3":
+            q, k = self.rope(
+                q, k,
+                self.freq_gates_q, self.freq_gates_k,
+                self.phase_q, self.phase_k,
+            )
+        elif self.pe_type == "ccrope":
+            gates_q, gates_k = CCRotaryEmbedding.compute_gates(
+                x, self.gate_proj_q, self.gate_proj_k,
+                self.n_heads, self.head_dim // 2,
+            )
+            q, k = self.rope(q, k, gates_q, gates_k)
+        elif self.pe_type == "dsrope":
+            if pos_local is None:
+                raise RuntimeError("dsrope requires pos_local from GPT.forward")
+            pos_abs = torch.arange(
+                seq_len, device=x.device, dtype=torch.long
+            ).unsqueeze(0).expand(bsz, seq_len)
+            q, k = self.rope(
+                q, k, pos_abs, pos_local,
+                self.alpha_q, self.alpha_k,
+                self.freq_gates_q, self.freq_gates_k,
+            )
 
         out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         out = out.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
@@ -99,8 +159,12 @@ class TransformerBlock(nn.Module):
             nn.Linear(hidden, d_model),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.ln1(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        pos_local: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x), pos_local=pos_local)
         x = x + self.mlp(self.ln2(x))
         return x
 
@@ -108,15 +172,13 @@ class TransformerBlock(nn.Module):
 class GPT(nn.Module):
     """Decoder-only transformer with pluggable positional encoding.
 
-    pe_type:
-      - "sinusoidal": fixed sinusoidal added to input embeddings.
-      - "rope":       rotary embeddings applied to q, k inside each attention layer.
-      - "asrope":     AS-RoPE with per-layer shared Q/K spectral gates.
-      - "asrope2":    AS-RoPE v2 with decoupled per-head Q and K gates.
-      - "none":       no positional encoding.
+    See module docstring for the supported pe_type values.
     """
 
-    _PE_CHOICES = ("sinusoidal", "rope", "asrope", "asrope2", "none")
+    _PE_CHOICES = (
+        "sinusoidal", "rope", "asrope", "asrope2",
+        "asrope3", "ccrope", "dsrope", "none",
+    )
 
     def __init__(
         self,
@@ -127,17 +189,21 @@ class GPT(nn.Module):
         max_seq_len: int = 128,
         mlp_ratio: int = 4,
         pe_type: str = "sinusoidal",
+        sep_id: int | None = None,
     ):
         super().__init__()
         if pe_type not in self._PE_CHOICES:
             raise ValueError(
                 f"Unknown pe_type='{pe_type}'. Choices: {self._PE_CHOICES}"
             )
+        if pe_type == "dsrope" and sep_id is None:
+            raise ValueError("pe_type='dsrope' requires sep_id (the [SEP] token id)")
 
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.max_seq_len = max_seq_len
         self.pe_type = pe_type
+        self.sep_id = sep_id
 
         self.token_emb = nn.Embedding(vocab_size, d_model)
 
@@ -170,8 +236,12 @@ class GPT(nn.Module):
         else:
             x = self.token_emb(input_ids)
 
+        pos_local = None
+        if self.pe_type == "dsrope":
+            pos_local = DSRotaryEmbedding.compute_pos_local(input_ids, self.sep_id)
+
         for block in self.blocks:
-            x = block(x)
+            x = block(x, pos_local=pos_local)
         x = self.final_ln(x)
         logits = self.lm_head(x)
         loss = None

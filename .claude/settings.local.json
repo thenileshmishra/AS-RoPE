@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python -c \"import matplotlib; print\\(matplotlib.__version__\\)\")",
-      "Bash(.venv/bin/python -c ':*)"
+      "Bash(.venv/bin/python -c ':*)",
+      "WebSearch",
+      "Bash(python -c ':*)"
     ]
   }
 }
