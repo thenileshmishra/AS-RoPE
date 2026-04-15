@@ -12,7 +12,14 @@ def build_mt_tokenizer(name_or_path: str = "ai4bharat/IndicBART"):
     """
     from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(name_or_path)
+    try:
+        tok = AutoTokenizer.from_pretrained(name_or_path)
+    except ImportError as e:
+        # Some fast tokenizer conversions require protobuf; fall back to slow tokenizer.
+        if "protobuf" not in str(e).lower():
+            raise
+        print("[tokenizer] protobuf missing; falling back to slow tokenizer (use_fast=False)")
+        tok = AutoTokenizer.from_pretrained(name_or_path, use_fast=False)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     tok.add_special_tokens({"sep_token": "<sep>"})

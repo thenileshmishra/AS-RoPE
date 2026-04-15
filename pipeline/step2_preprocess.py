@@ -1,11 +1,9 @@
-"""Step 2 — Clean, split and cache the raw Samanantar dump.
+"""Step 2 — Basic clean, split and cache the raw Samanantar dump.
 
-Streams the raw TSV written by Step 1, applies cheap per-line filters
-(length, length ratio, script, language, noise, copy) followed by a
-sentence-embedding semantic similarity filter in chunks, deduplicates,
-and stops once ``MAX_CLEAN_PAIRS`` high-quality pairs have been collected.
-Deterministic train/val/test splits are then written back to Drive under
-:mod:`pipeline.paths`.
+Streams the raw TSV written by Step 1, applies lightweight per-line filters
+(length, length ratio, script, language, noise, copy), deduplicates, and
+stops once ``MAX_CLEAN_PAIRS`` clean pairs have been collected.
+Deterministic train/val/test splits are then written under :mod:`pipeline.paths`.
 
 Usage:
     !python -m pipeline.step2_preprocess
@@ -40,12 +38,6 @@ VAL_RATIO = 0.05
 
 # --- NEW FILTER --- hard cap on the number of clean pairs collected
 MAX_CLEAN_PAIRS = 5_000_000
-
-# --- NEW FILTER --- lightweight semantic similarity config
-SEMANTIC_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-SEMANTIC_MIN_SIM = 0.55
-SEMANTIC_BATCH_SIZE = 256
-STREAM_CHUNK_SIZE = 10_000
 
 # --- NEW FILTER --- noise thresholds
 MIN_LATIN_RATIO = 0.9
@@ -184,59 +176,11 @@ def _cheap_filter(hi: str, en: str, stats: dict) -> bool:
     return True
 
 
-# --- NEW FILTER --- lightweight semantic similarity model loader
-def _load_semantic_model():
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        print("[step2] sentence-transformers not installed; skipping semantic filter")
-        return None
-    try:
-        import torch
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = SentenceTransformer(SEMANTIC_MODEL_NAME, device=device)
-        print(f"[step2] loaded semantic model {SEMANTIC_MODEL_NAME} on {device}")
-        return model
-    except Exception as e:
-        print(f"[step2] failed to load semantic model ({e}); skipping semantic filter")
-        return None
-
-
-def _semantic_mask(model, hi_list: list[str], en_list: list[str]) -> list[bool]:
-    """Return per-pair keep/drop mask based on cosine similarity of embeddings."""
-    emb_hi = model.encode(
-        hi_list,
-        batch_size=SEMANTIC_BATCH_SIZE,
-        convert_to_tensor=True,
-        normalize_embeddings=True,
-        show_progress_bar=False,
-    )
-    emb_en = model.encode(
-        en_list,
-        batch_size=SEMANTIC_BATCH_SIZE,
-        convert_to_tensor=True,
-        normalize_embeddings=True,
-        show_progress_bar=False,
-    )
-    sims = (emb_hi * emb_en).sum(dim=1).cpu().tolist()
-    return [s >= SEMANTIC_MIN_SIM for s in sims]
-
-
 def clean_pairs_streaming(
     input_path: Path,
     max_clean: int = MAX_CLEAN_PAIRS,
-    chunk_size: int = STREAM_CHUNK_SIZE,
 ) -> tuple[list[tuple[str, str]], dict]:
-    """Stream the raw TSV, apply all filters, and return up to ``max_clean`` pairs.
-
-    Processing pattern:
-      1. Cheap per-line filters (length / script / noise / copy) on each row.
-      2. Survivors are buffered up to ``chunk_size``, then scored by the
-         semantic-similarity model in a single batched call.
-      3. Duplicate checks run on canonicalised keys to catch casing/punct dupes.
-      4. Early-exit once ``max_clean`` high-quality pairs have been kept.
-    """
+    """Stream the raw TSV, apply basic filters, and return up to ``max_clean`` pairs."""
     stats = {
         "total": 0,
         "too_short": 0,
@@ -247,39 +191,11 @@ def clean_pairs_streaming(
         "noisy": 0,
         "copy": 0,
         "duplicate": 0,
-        "low_similarity": 0,
         "kept": 0,
     }
     seen_canonical: set[tuple[str, str]] = set()
     kept: list[tuple[str, str]] = []
-    model = _load_semantic_model()
 
-    def flush(buf: list[tuple[str, str]]) -> bool:
-        """Semantic + dedup pass over a chunk. Returns True when max_clean hit."""
-        if not buf:
-            return False
-        if model is not None:
-            hi_list = [h for h, _ in buf]
-            en_list = [e for _, e in buf]
-            mask = _semantic_mask(model, hi_list, en_list)
-        else:
-            mask = [True] * len(buf)
-        for (hi, en), keep in zip(buf, mask):
-            if not keep:
-                stats["low_similarity"] += 1
-                continue
-            canonical_pair = (_canonical(hi), _canonical(en))
-            if canonical_pair in seen_canonical:
-                stats["duplicate"] += 1
-                continue
-            seen_canonical.add(canonical_pair)
-            kept.append((hi, en))
-            stats["kept"] += 1
-            if stats["kept"] >= max_clean:
-                return True
-        return False
-
-    buffer: list[tuple[str, str]] = []
     with open(input_path, encoding="utf-8") as f:
         for line in f:
             stats["total"] += 1
@@ -292,19 +208,19 @@ def clean_pairs_streaming(
                 continue
             if not _cheap_filter(hi, en, stats):
                 continue
-            buffer.append((hi, en))
-            if len(buffer) >= chunk_size:
-                reached = flush(buffer)
-                buffer = []
-                if stats["total"] % 100_000 == 0 or reached:
-                    print(
-                        f"[step2] streamed {stats['total']:,} lines | kept {stats['kept']:,}"
-                    )
-                if reached:
-                    break
-        else:
-            if buffer:
-                flush(buffer)
+            canonical_pair = (_canonical(hi), _canonical(en))
+            if canonical_pair in seen_canonical:
+                stats["duplicate"] += 1
+                continue
+            seen_canonical.add(canonical_pair)
+            kept.append((hi, en))
+            stats["kept"] += 1
+
+            if stats["total"] % 100_000 == 0:
+                print(f"[step2] streamed {stats['total']:,} lines | kept {stats['kept']:,}")
+
+            if stats["kept"] >= max_clean:
+                break
 
     return kept[:max_clean], stats
 
@@ -346,12 +262,6 @@ def main(argv: list[str] | None = None) -> None:
         default=MAX_CLEAN_PAIRS,
         help="Stop after collecting this many clean pairs (default: 5M)",
     )
-    parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=STREAM_CHUNK_SIZE,
-        help="Semantic-filter batch size for streaming (default: 10k)",
-    )
     args = parser.parse_args(argv)
 
     paths.ensure_dirs()
@@ -361,9 +271,7 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     print(f"[step2] streaming raw pairs from {paths.RAW_SAMANANTAR}")
-    cleaned, stats = clean_pairs_streaming(
-        paths.RAW_SAMANANTAR, max_clean=args.max_clean, chunk_size=args.chunk_size
-    )
+    cleaned, stats = clean_pairs_streaming(paths.RAW_SAMANANTAR, max_clean=args.max_clean)
     print(f"[step2] cleaning stats: {stats}")
 
     train, val, test = deterministic_split(cleaned, seed=args.seed)
@@ -383,8 +291,6 @@ def main(argv: list[str] | None = None) -> None:
         "max_len_ratio": MAX_LEN_RATIO,
         "min_devanagari_ratio": MIN_DEVANAGARI_RATIO,
         "min_latin_ratio": MIN_LATIN_RATIO,
-        "semantic_model": SEMANTIC_MODEL_NAME,
-        "semantic_min_sim": SEMANTIC_MIN_SIM,
         "max_clean_pairs": args.max_clean,
         "stats": stats,
         "train_size": len(train),

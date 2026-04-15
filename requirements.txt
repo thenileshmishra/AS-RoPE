@@ -3,6 +3,7 @@ transformers==4.44.2
 datasets>=2.19.0
 sentencepiece>=0.1.99
 tokenizers>=0.19.0
+protobuf>=4.25.0
 sentence-transformers>=2.7.0
 sacrebleu>=2.4.0
 tqdm>=4.66.0

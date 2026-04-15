@@ -1,10 +1,9 @@
-"""Shared Google Drive path configuration for the sequential pipeline.
+"""Shared path configuration for the sequential pipeline.
 
-Every step reads from and writes to paths defined here so that the four
-stages can run independently and still find each other's artifacts.
+By default, all pipeline artifacts are written inside this repository root,
+so downloads and processed outputs stay local to the current project.
 
-Override `PROJECT_ROOT` with the `NEUR_DRIVE_ROOT` environment variable if
-you keep your project under a different Drive folder.
+Override `NEUR_DRIVE_ROOT` if you want to store artifacts elsewhere.
 """
 
 from __future__ import annotations
@@ -13,7 +12,8 @@ import os
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(os.environ.get("NEUR_DRIVE_ROOT", str(Path.home() / "neur_data")))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(os.environ.get("NEUR_DRIVE_ROOT", str(REPO_ROOT)))
 
 RAW_DIR = PROJECT_ROOT / "raw_data"
 RAW_SAMANANTAR = RAW_DIR / "samanantar" / "samanantar_hi_en.tsv"

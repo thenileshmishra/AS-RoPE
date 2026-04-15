@@ -46,7 +46,7 @@ def download_samanantar_bn(output_tsv: Path, force: bool = False) -> None:
             en = (tr.get("en") or ex.get("tgt") or "").strip()
             if not bn or not en:
                 continue
-            f.write(f"{" ".join(bn.split())}\t{" ".join(en.split())}\n")
+            f.write(f"{' '.join(bn.split())}\t{' '.join(en.split())}\n")
             kept += 1
             if kept % 200_000 == 0:
                 print(f"[step1_bn] {kept:,} pairs written ...")
