@@ -19,6 +19,13 @@ RAW_DIR = PROJECT_ROOT / "raw_data"
 RAW_SAMANANTAR = RAW_DIR / "samanantar" / "samanantar_hi_en.tsv"
 RAW_FLORES = RAW_DIR / "flores200" / "flores200_hi_en_devtest.tsv"
 
+# Bengali-English paths
+RAW_SAMANANTAR_BN = RAW_DIR / "samanantar" / "samanantar_bn_en.tsv"
+RAW_FLORES_BN = RAW_DIR / "flores200" / "flores200_bn_en_devtest.tsv"
+PROCESSED_DIR_BN = PROJECT_ROOT / "processed_data_bn"
+PROCESSED_TRAIN_BN = PROCESSED_DIR_BN / "train.tsv"
+PROCESSED_VAL_BN = PROCESSED_DIR_BN / "val.tsv"
+
 PROCESSED_DIR = PROJECT_ROOT / "processed_data"
 PROCESSED_TRAIN = PROCESSED_DIR / "train.tsv"
 PROCESSED_VAL = PROCESSED_DIR / "val.tsv"
