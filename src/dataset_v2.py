@@ -103,6 +103,6 @@ class MTDatasetCached(Dataset):
         start = int(self.offsets[idx].item())
         end = int(self.offsets[idx + 1].item())
         return {
-            "input_ids": self.input_ids_flat[start:end].tolist(),
-            "labels": self.labels_flat[start:end].tolist(),
+            "input_ids": self.input_ids_flat[start:end],
+            "labels": self.labels_flat[start:end],
         }

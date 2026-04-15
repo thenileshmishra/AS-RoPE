@@ -62,10 +62,16 @@ def collate_mt_batch(examples: list[dict], pad_id: int) -> dict[str, torch.Tenso
     input_ids = torch.full((bsz, max_len), pad_id, dtype=torch.long)
     labels = torch.full((bsz, max_len), -100, dtype=torch.long)
     attention_mask = torch.zeros((bsz, max_len), dtype=torch.long)
+
+    def _as_long_1d(x) -> torch.Tensor:
+        # Accept both python lists and tensors without forcing a list round-trip.
+        t = x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
+        return t.to(dtype=torch.long)
+
     for i, ex in enumerate(examples):
         n = len(ex["input_ids"])
-        input_ids[i, :n] = torch.tensor(ex["input_ids"], dtype=torch.long)
-        labels[i, :n] = torch.tensor(ex["labels"], dtype=torch.long)
+        input_ids[i, :n] = _as_long_1d(ex["input_ids"])
+        labels[i, :n] = _as_long_1d(ex["labels"])
         attention_mask[i, :n] = 1
     return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 

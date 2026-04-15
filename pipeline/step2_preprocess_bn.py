@@ -25,6 +25,10 @@ MIN_LEN_RATIO = 0.7
 MAX_LEN_RATIO = 1.5
 MIN_BENGALI_RATIO = 0.6     # src must be ≥60% Bengali script
 MIN_LATIN_RATIO = 0.9       # tgt (English) must be ≥90% Latin
+MAX_PUNCT_RATIO = 0.30
+MAX_DIGIT_RATIO = 0.30
+MAX_REPEAT_RUN = 4
+COPY_JACCARD_THRESHOLD = 0.5
 MAX_CLEAN_PAIRS = 500_000   # 500K — enough for a PE ablation paper
 TRAIN_RATIO = 0.90
 VAL_RATIO = 0.05
@@ -49,6 +53,32 @@ def _latin_ratio(text: str) -> float:
     return sum(1 for ch in letters if "LATIN" in unicodedata.name(ch, "")) / len(letters)
 
 
+def _punct_ratio(text: str) -> float:
+    punct = set(".,;:!?\"'()[]{}<>|/\\-_=+*&^%$#@~`")
+    chars = [ch for ch in text if not ch.isspace()]
+    return sum(1 for ch in chars if ch in punct) / len(chars) if chars else 0.0
+
+
+def _digit_ratio(text: str) -> float:
+    chars = [ch for ch in text if not ch.isspace()]
+    return sum(1 for ch in chars if ch.isdigit()) / len(chars) if chars else 0.0
+
+
+def _has_long_repeat(text: str, max_run: int) -> bool:
+    prev, run = None, 0
+    for ch in text:
+        run = run + 1 if ch == prev else 1
+        if run > max_run:
+            return True
+        prev = ch
+    return False
+
+
+def _jaccard(a: str, b: str) -> float:
+    sa, sb = set(a.lower().split()), set(b.lower().split())
+    return len(sa & sb) / len(sa | sb) if sa | sb else 0.0
+
+
 def _is_clean(bn: str, en: str) -> bool:
     bn_tok = bn.split()
     en_tok = en.split()
@@ -62,6 +92,14 @@ def _is_clean(bn: str, en: str) -> bool:
     if _bengali_ratio(bn) < MIN_BENGALI_RATIO:
         return False
     if _latin_ratio(en) < MIN_LATIN_RATIO:
+        return False
+    if _punct_ratio(bn) > MAX_PUNCT_RATIO or _punct_ratio(en) > MAX_PUNCT_RATIO:
+        return False
+    if _digit_ratio(bn) > MAX_DIGIT_RATIO or _digit_ratio(en) > MAX_DIGIT_RATIO:
+        return False
+    if _has_long_repeat(bn, MAX_REPEAT_RUN) or _has_long_repeat(en, MAX_REPEAT_RUN):
+        return False
+    if _jaccard(bn, en) > COPY_JACCARD_THRESHOLD:
         return False
     return True
 
