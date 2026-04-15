@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(os.environ.get("NEUR_DRIVE_ROOT", "/content/drive/MyDrive/neur"))
+PROJECT_ROOT = Path(os.environ.get("NEUR_DRIVE_ROOT", str(Path.home() / "neur_data")))
 
 RAW_DIR = PROJECT_ROOT / "raw_data"
 RAW_SAMANANTAR = RAW_DIR / "samanantar" / "samanantar_hi_en.tsv"
