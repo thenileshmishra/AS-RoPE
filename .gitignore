@@ -69,3 +69,4 @@ outputs/
 raw_data/
 processed_data/
 processed_data_bn/
+processed_data_wmt14/
