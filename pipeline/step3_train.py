@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> None:
     _add_bool(parser, "pin-memory", True, "pinned memory")
     _add_bool(parser, "checkpoint-light", True, "best.pt stores weights only")
     _add_bool(parser, "tie-embeddings", True, "tie src/tgt embedding + lm_head")
+    _add_bool(parser, "use-checkpoint", False, "gradient checkpointing (saves ~50% memory, ~30% slower)")
     parser.add_argument("--dataloader-workers", type=int, default=2)
 
     args = parser.parse_args(argv)
@@ -113,6 +114,7 @@ def main(argv: list[str] | None = None) -> None:
         dataloader_workers=args.dataloader_workers,
         pin_memory=args.pin_memory,
         tie_embeddings=args.tie_embeddings,
+        use_checkpoint=args.use_checkpoint,
         checkpoint_light=args.checkpoint_light,
     )
 

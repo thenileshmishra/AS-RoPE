@@ -51,6 +51,7 @@ def load_model_from_checkpoint(checkpoint_path: str, device: str) -> tuple[Encod
         pe_type=str(cfg["pe_type"]),
         dropout=float(cfg.get("dropout", 0.0)),
         tie_embeddings=bool(cfg.get("tie_embeddings", True)),
+        use_checkpoint=False,  # never checkpoint during eval
     )
     missing, unexpected = model.load_state_dict(ckpt["model_state_dict"], strict=False)
     if missing or unexpected:

@@ -56,6 +56,7 @@ class TrainConfig:
     pin_memory: bool = True
     val_subset_size: int = 500
     tie_embeddings: bool = True
+    use_checkpoint: bool = False
     checkpoint_light: bool = True
 
 
@@ -169,6 +170,7 @@ def train(cfg: TrainConfig) -> dict:
         n_enc_layers=cfg.n_enc_layers, n_dec_layers=cfg.n_dec_layers,
         max_seq_len=cfg.max_seq_len, pe_type=cfg.pe_type,
         dropout=cfg.dropout, tie_embeddings=cfg.tie_embeddings,
+        use_checkpoint=cfg.use_checkpoint,
     ).to(cfg.device)
 
     n_params = sum(p.numel() for p in model.parameters())

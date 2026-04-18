@@ -11,6 +11,7 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from src.positional import build_pe
 
@@ -149,6 +150,7 @@ class EncoderDecoder(nn.Module):
         pe_type: str = "rope",
         dropout: float = 0.1,
         tie_embeddings: bool = True,
+        use_checkpoint: bool = False,
     ):
         super().__init__()
         self.pad_id = pad_id
@@ -173,6 +175,7 @@ class EncoderDecoder(nn.Module):
         if tie_embeddings:
             self.lm_head.weight = self.embed.weight
 
+        self.use_checkpoint = use_checkpoint
         self.apply(self._init_weights)
 
     @staticmethod
@@ -191,14 +194,20 @@ class EncoderDecoder(nn.Module):
         src_kpm = self._pad_mask(src)
         x = self.emb_drop(self.embed(src) * math.sqrt(self.d_model))
         for layer in self.encoder:
-            x = layer(x, src_kpm)
+            if self.use_checkpoint and self.training:
+                x = checkpoint(layer, x, src_kpm, use_reentrant=False)
+            else:
+                x = layer(x, src_kpm)
         return self.enc_ln(x), src_kpm
 
     def decode(self, tgt: torch.Tensor, enc: torch.Tensor, src_kpm: torch.Tensor) -> torch.Tensor:
         tgt_kpm = self._pad_mask(tgt)
         x = self.emb_drop(self.embed(tgt) * math.sqrt(self.d_model))
         for layer in self.decoder:
-            x = layer(x, enc, tgt_kpm, src_kpm)
+            if self.use_checkpoint and self.training:
+                x = checkpoint(layer, x, enc, tgt_kpm, src_kpm, use_reentrant=False)
+            else:
+                x = layer(x, enc, tgt_kpm, src_kpm)
         return self.dec_ln(x)
 
     def forward(self, src: torch.Tensor, tgt_in: torch.Tensor) -> torch.Tensor:
