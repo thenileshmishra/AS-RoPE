@@ -1,4 +1,4 @@
-"""Encoder-decoder Transformer for MT with pluggable rotary PE (RoPE/AsRope2/AsRope3).
+"""Encoder-decoder Transformer for MT with Rotary Position Embedding (RoPE).
 
 Rotary is applied on Q/K in self-attention (encoder + decoder). Cross-attention
 uses no rotary — target positions are already captured in decoder self-attn Q.
@@ -214,6 +214,86 @@ class EncoderDecoder(nn.Module):
         enc, src_kpm = self.encode(src)
         h = self.decode(tgt_in, enc, src_kpm)
         return self.lm_head(h)
+
+    @torch.no_grad()
+    def generate_beam(
+        self,
+        src: torch.Tensor,
+        bos_id: int,
+        eos_id: int,
+        beam_size: int = 5,
+        max_new_tokens: int = 128,
+        length_penalty: float = 0.6,
+    ) -> torch.Tensor:
+        """Beam search decoding. Processes one sentence at a time; returns (B, T) best hypotheses."""
+        self.eval()
+        device = src.device
+        results: list[list[int]] = []
+
+        for b in range(src.size(0)):
+            src_b = src[b:b+1]                      # (1, S)
+            enc, src_kpm = self.encode(src_b)        # (1, S, D)
+
+            # Each beam: (score, token_ids)
+            beams: list[tuple[float, list[int]]] = [(0.0, [bos_id])]
+            completed: list[tuple[float, list[int]]] = []
+
+            for _ in range(max_new_tokens):
+                if not beams:
+                    break
+                # Batch all active beams
+                tgt = torch.tensor([ids for _, ids in beams], dtype=torch.long, device=device)
+                B2 = tgt.size(0)
+                enc_exp = enc.expand(B2, -1, -1)
+                kpm_exp = src_kpm.expand(B2, -1)
+
+                h = self.decode(tgt, enc_exp, kpm_exp)
+                logits = self.lm_head(h[:, -1])             # (B2, V)
+                log_probs = torch.log_softmax(logits, dim=-1)
+
+                # Expand each beam with top-beam_size tokens
+                top_lp, top_ids = log_probs.topk(beam_size, dim=-1)  # (B2, beam)
+
+                candidates: list[tuple[float, list[int]]] = []
+                for i, (score, ids) in enumerate(beams):
+                    for j in range(beam_size):
+                        new_score = score + float(top_lp[i, j].item())
+                        new_ids = ids + [int(top_ids[i, j].item())]
+                        candidates.append((new_score, new_ids))
+
+                # Keep top beam_size by length-normalized score
+                def _normed(sc, ids):
+                    lp = ((5 + len(ids)) / 6) ** length_penalty
+                    return sc / lp
+
+                candidates.sort(key=lambda x: _normed(x[0], x[1]), reverse=True)
+
+                beams = []
+                for score, ids in candidates:
+                    if ids[-1] == eos_id:
+                        completed.append((score, ids[:-1]))  # drop EOS
+                    else:
+                        beams.append((score, ids))
+                    if len(beams) == beam_size and len(completed) + len(beams) >= beam_size:
+                        break
+
+                beams = beams[:beam_size]
+
+                if len(completed) >= beam_size:
+                    break
+
+            if not completed:
+                completed = beams if beams else [(0.0, [bos_id])]
+
+            best = max(completed, key=lambda x: _normed(x[0], x[1]))
+            results.append(best[1][1:])  # strip leading BOS
+
+        # Pad to same length
+        max_len = max((len(r) for r in results), default=1)
+        out = torch.full((len(results), max_len), self.pad_id, dtype=torch.long, device=device)
+        for i, r in enumerate(results):
+            out[i, :len(r)] = torch.tensor(r, dtype=torch.long, device=device)
+        return out
 
     @torch.no_grad()
     def generate_greedy(

@@ -76,7 +76,6 @@ def greedy_translate(
     max_new_tokens: int = 128,
     batch_size: int = 32,
 ) -> list[str]:
-    """Tokenize sources in batches; greedy decode; return list of detokenized predictions."""
     hyps: list[str] = []
     for i in range(0, len(sources), batch_size):
         chunk = sources[i : i + batch_size]
@@ -85,10 +84,39 @@ def greedy_translate(
         src = enc["input_ids"].to(device)
         out = model.generate_greedy(src, bos_id=bos_id, eos_id=eos_id,
                                      max_new_tokens=max_new_tokens)
-        # Strip leading BOS column and anything after EOS
         trimmed: list[list[int]] = []
         for row in out.tolist():
             row = row[1:]  # drop BOS
+            trimmed.append(_strip_after_eos(row, eos_id, pad_id))
+        hyps.extend(_detok(tokenizer, trimmed))
+    return hyps
+
+
+def beam_translate(
+    model: EncoderDecoder,
+    tokenizer,
+    sources: list[str],
+    device: str,
+    bos_id: int,
+    eos_id: int,
+    pad_id: int,
+    max_seq_len: int,
+    beam_size: int = 5,
+    max_new_tokens: int = 128,
+    length_penalty: float = 0.6,
+    batch_size: int = 32,
+) -> list[str]:
+    hyps: list[str] = []
+    for i in range(0, len(sources), batch_size):
+        chunk = sources[i : i + batch_size]
+        enc = tokenizer(chunk, add_special_tokens=True, truncation=True,
+                        max_length=max_seq_len, padding=True, return_tensors="pt")
+        src = enc["input_ids"].to(device)
+        out = model.generate_beam(src, bos_id=bos_id, eos_id=eos_id,
+                                   beam_size=beam_size, max_new_tokens=max_new_tokens,
+                                   length_penalty=length_penalty)
+        trimmed: list[list[int]] = []
+        for row in out.tolist():
             trimmed.append(_strip_after_eos(row, eos_id, pad_id))
         hyps.extend(_detok(tokenizer, trimmed))
     return hyps
@@ -153,6 +181,8 @@ def evaluate_checkpoint(
     tokenizer_name: str = "Helsinki-NLP/opus-mt-en-de",
     max_new_tokens: int = 128,
     batch_size: int = 32,
+    beam_size: int = 1,
+    length_penalty: float = 0.6,
 ) -> dict:
     from src.tokenizer_utils import build_mt_tokenizer
 
@@ -171,15 +201,25 @@ def evaluate_checkpoint(
     sources = [s for s, _ in pairs]
     refs = [t for _, t in pairs]
 
-    print(f"[eval] greedy decoding (max_new_tokens={max_new_tokens}, batch={batch_size})")
+    decode_mode = f"beam-{beam_size}" if beam_size > 1 else "greedy"
+    print(f"[eval] {decode_mode} decoding (max_new_tokens={max_new_tokens}, batch={batch_size})")
     import time
     t0 = time.monotonic()
-    preds = greedy_translate(
-        model, tokenizer, sources, device,
-        bos_id=bos_id, eos_id=eos_id, pad_id=pad_id,
-        max_seq_len=max_seq_len, max_new_tokens=max_new_tokens,
-        batch_size=batch_size,
-    )
+    if beam_size > 1:
+        preds = beam_translate(
+            model, tokenizer, sources, device,
+            bos_id=bos_id, eos_id=eos_id, pad_id=pad_id,
+            max_seq_len=max_seq_len, beam_size=beam_size,
+            max_new_tokens=max_new_tokens, length_penalty=length_penalty,
+            batch_size=batch_size,
+        )
+    else:
+        preds = greedy_translate(
+            model, tokenizer, sources, device,
+            bos_id=bos_id, eos_id=eos_id, pad_id=pad_id,
+            max_seq_len=max_seq_len, max_new_tokens=max_new_tokens,
+            batch_size=batch_size,
+        )
     decode_sec = time.monotonic() - t0
     print(f"[eval] decoded {len(preds)} in {decode_sec:.1f}s "
           f"({len(preds) / max(decode_sec, 1e-6):.2f} sent/s)")
@@ -197,6 +237,8 @@ def evaluate_checkpoint(
         "eval_tsv": str(eval_tsv),
         "pe_type": cfg.get("pe_type"),
         "n_params": cfg.get("n_params"),
+        "decode_mode": decode_mode,
+        "beam_size": beam_size,
         "decode_sec": decode_sec,
         "overall": overall,
         "by_src_length": by_len,

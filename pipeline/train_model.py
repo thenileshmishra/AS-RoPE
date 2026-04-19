@@ -1,10 +1,11 @@
-"""Step 3 — Train one PE variant (rope/asrope2/asrope3) on WMT14 En-De.
+"""Train encoder-decoder Transformer on WMT14 En-De with RoPE or Adaptive RoPE.
 
 Usage:
-    python -m pipeline.step3_train --pe-type rope --run-name rope_de_sanity \
+    python -m pipeline.train_model --run-name adaptiverope_wmt14 \
+        --pe-type adaptiverope \
         --tokenized-train processed_data_wmt14/tokenized/train_wmt14_en_de.pt \
         --tokenized-val   processed_data_wmt14/tokenized/val_wmt14_en_de.pt \
-        --num-steps 500 --eval-every 100 --batch-size 32
+        --num-steps 30000 --eval-every 1000 --batch-size 512 --use-checkpoint
 """
 
 from __future__ import annotations
@@ -23,9 +24,9 @@ def _detect_device() -> str:
         name = torch.cuda.get_device_name(0)
         props = torch.cuda.get_device_properties(0)
         mem = getattr(props, "total_memory", 0) / 1e9
-        print(f"[step3] device=cuda ({name}, {mem:.1f} GB)")
+        print(f"[train] device=cuda ({name}, {mem:.1f} GB)")
         return "cuda"
-    print("[step3] device=cpu")
+    print("[train] device=cpu")
     return "cpu"
 
 
@@ -38,10 +39,10 @@ def _add_bool(parser, name, default, help_text):
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Train WMT14 En-De encoder-decoder")
+    parser = argparse.ArgumentParser(description="Train encoder-decoder with RoPE or Adaptive RoPE")
 
-    parser.add_argument("--pe-type", choices=["rope", "asrope2", "asrope3"],
-                        default="rope")
+    parser.add_argument("--pe-type", choices=["rope", "adaptiverope", "sinusoidal"],
+                        default="rope", help="Positional encoding type")
     parser.add_argument("--run-name", required=True,
                         help="Subdir under outputs/ for this run")
 
@@ -119,13 +120,13 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     eff = cfg.batch_size * cfg.grad_accum_steps
-    print(f"[step3] pe={cfg.pe_type} d={cfg.d_model} heads={cfg.n_heads} "
+    print(f"[train] pe={cfg.pe_type} d={cfg.d_model} heads={cfg.n_heads} "
           f"ff={cfg.d_ff} enc={cfg.n_enc_layers} dec={cfg.n_dec_layers} "
           f"seq={cfg.max_seq_len} batch={cfg.batch_size}x{cfg.grad_accum_steps}={eff} "
           f"steps={cfg.num_steps}")
 
     summary = train(cfg)
-    print(f"[step3] summary:\n{json.dumps(summary, indent=2)}")
+    print(f"[train] summary:\n{json.dumps(summary, indent=2)}")
 
 
 if __name__ == "__main__":
