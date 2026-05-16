@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from src.positional import build_pe
+from src.positional import Sinusoidal, build_pe
 
 
 class MultiHeadSelfAttention(nn.Module):
@@ -159,6 +159,8 @@ class EncoderDecoder(nn.Module):
 
         self.embed = nn.Embedding(vocab_size, d_model, padding_idx=pad_id)
         self.emb_drop = nn.Dropout(dropout)
+        # Sinusoidal PE is applied to embeddings; RoPE/AdaptiveRoPE work inside attention
+        self.emb_pe = Sinusoidal(d_model, max_seq_len) if pe_type == "sinusoidal" else None
 
         self.encoder = nn.ModuleList([
             EncoderLayer(d_model, n_heads, d_ff, max_seq_len, pe_type, dropout)
@@ -192,7 +194,10 @@ class EncoderDecoder(nn.Module):
 
     def encode(self, src: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         src_kpm = self._pad_mask(src)
-        x = self.emb_drop(self.embed(src) * math.sqrt(self.d_model))
+        x = self.embed(src) * math.sqrt(self.d_model)
+        if self.emb_pe is not None:
+            x = self.emb_pe(x)
+        x = self.emb_drop(x)
         for layer in self.encoder:
             if self.use_checkpoint and self.training:
                 x = checkpoint(layer, x, src_kpm, use_reentrant=False)
@@ -202,7 +207,10 @@ class EncoderDecoder(nn.Module):
 
     def decode(self, tgt: torch.Tensor, enc: torch.Tensor, src_kpm: torch.Tensor) -> torch.Tensor:
         tgt_kpm = self._pad_mask(tgt)
-        x = self.emb_drop(self.embed(tgt) * math.sqrt(self.d_model))
+        x = self.embed(tgt) * math.sqrt(self.d_model)
+        if self.emb_pe is not None:
+            x = self.emb_pe(x)
+        x = self.emb_drop(x)
         for layer in self.decoder:
             if self.use_checkpoint and self.training:
                 x = checkpoint(layer, x, enc, tgt_kpm, src_kpm, use_reentrant=False)

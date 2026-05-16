@@ -1,6 +1,6 @@
-"""Positional encodings: RoPE, Adaptive RoPE (learnable variant), and Sinusoidal.
+"""Positional encodings: RoPE, Adaptive RoPE, Sinusoidal.
 
-RoPE and RoPE-v3 use real sin/cos arithmetic only — no torch.polar / view_as_complex,
+RoPE uses real sin/cos arithmetic — no torch.polar / view_as_complex,
 so torch.compile can fully fuse every kernel.
 
 Rotation formula (equivalent to complex multiply):
@@ -17,12 +17,6 @@ from torch import nn
 
 
 def _apply_rot(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    """Apply rotary rotation using real arithmetic.
-
-    x   : (B, H, T, D)
-    cos : broadcastable to (B, H, T, D//2)
-    sin : broadcastable to (B, H, T, D//2)
-    """
     x1 = x[..., 0::2].float()
     x2 = x[..., 1::2].float()
     out = torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
@@ -30,11 +24,10 @@ def _apply_rot(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.T
 
 
 class RoPE(nn.Module):
-    """Rotary Position Embedding (RoPE) with precomputed cos/sin cache.
+    """Rotary Position Embedding (Su et al., 2021).
 
-    Encodes position by rotating Q/K vectors in 2D planes. Each pair of
-    dimensions (2i, 2i+1) is rotated by an angle theta_p = p / (10000^(2i/d))
-    where p is the position and d is the head dimension.
+    Encodes position by rotating Q/K in 2D planes. Each pair (2i, 2i+1)
+    is rotated by theta_p = p / (10000^(2i/d)).
     """
 
     def __init__(self, head_dim: int, max_seq_len: int, base: float = 10000.0):
@@ -42,31 +35,28 @@ class RoPE(nn.Module):
         if head_dim % 2 != 0:
             raise ValueError(f"head_dim must be even, got {head_dim}")
         inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
-        positions = torch.arange(max_seq_len).float()
-        freqs = torch.outer(positions, inv_freq)          # (T, D//2)
+        freqs = torch.outer(torch.arange(max_seq_len).float(), inv_freq)
         self.register_buffer("cos_cache", freqs.cos(), persistent=False)
         self.register_buffer("sin_cache", freqs.sin(), persistent=False)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         T = q.size(-2)
-        cos = self.cos_cache[:T].unsqueeze(0).unsqueeze(0)  # (1,1,T,D//2)
+        cos = self.cos_cache[:T].unsqueeze(0).unsqueeze(0)
         sin = self.sin_cache[:T].unsqueeze(0).unsqueeze(0)
         return _apply_rot(q, cos, sin), _apply_rot(k, cos, sin)
 
 
 class AdaptiveRoPE(nn.Module):
-    """Adaptive RoPE: Rotary Position Embedding with learnable phase offsets.
+    """Adaptive RoPE: learnable per-head frequency gates and phase offsets.
 
-    Novel extension of RoPE that adds learnable phase offsets per head per frequency.
-    This allows the model to adapt the rotational structure of positional encoding
-    during training, potentially capturing task-specific position patterns.
+    Extends RoPE with (n_heads, n_freqs) trainable gates and phases.
+    Init: gates=1, phase=0 => identical to standard RoPE at step 0.
 
-    Parameters:
-        gates_q, gates_k: (n_heads, n_freqs) learnable per-head frequency gates (init ones)
-        phase_q, phase_k: (n_heads, n_freqs) learnable phase offsets (init zeros)
+    The effective rotation angle becomes:
+        theta = pos * base_freq * gate + phase
 
-    Initialization: gates=1.0 and phase=0.0 ⟹ identical to standard RoPE at step 0.
-    During training, gradients adjust gates and phases to optimize attention patterns.
+    This allows each head to independently scale and shift its frequency
+    usage, revealing task-specific positional preferences via gradient descent.
     """
 
     def __init__(self, n_heads: int, head_dim: int, max_seq_len: int, base: float = 10000.0):
@@ -75,10 +65,8 @@ class AdaptiveRoPE(nn.Module):
             raise ValueError(f"head_dim must be even, got {head_dim}")
         self.n_freqs = head_dim // 2
         inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
-        positions = torch.arange(max_seq_len).float()
-        self.register_buffer("positions", positions, persistent=False)
+        self.register_buffer("positions", torch.arange(max_seq_len).float(), persistent=False)
         self.register_buffer("base_freqs", inv_freq, persistent=False)
-
         self.gates_q = nn.Parameter(torch.ones(n_heads, self.n_freqs))
         self.gates_k = nn.Parameter(torch.ones(n_heads, self.n_freqs))
         self.phase_q = nn.Parameter(torch.zeros(n_heads, self.n_freqs))
@@ -99,57 +87,43 @@ class AdaptiveRoPE(nn.Module):
 
 
 class Sinusoidal(nn.Module):
-    """Standard sinusoidal positional encoding (absolute positions).
+    """Sinusoidal positional encoding (Vaswani et al., 2017).
 
-    Uses the formula from Vaswani et al. (2017):
-    PE(pos, 2i) = sin(pos / 10000^(2i/d))
+    Applied to input embeddings before attention (not to Q/K).
+    PE(pos, 2i)   = sin(pos / 10000^(2i/d))
     PE(pos, 2i+1) = cos(pos / 10000^(2i/d))
-
-    Applied directly to embeddings before attention.
-    Note: Does not modify Q/K, applied to input embeddings.
     """
 
     def __init__(self, d_model: int, max_seq_len: int):
         super().__init__()
-        if d_model % 2 != 0:
-            raise ValueError(f"d_model must be even, got {d_model}")
-
         pe = torch.zeros(max_seq_len, d_model)
-        positions = torch.arange(max_seq_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) *
-                            -(math.log(10000.0) / d_model))
-
-        pe[:, 0::2] = torch.sin(positions * div_term)
-        if d_model % 2 == 0:
-            pe[:, 1::2] = torch.cos(positions * div_term)
-        else:
-            pe[:, 1::2] = torch.cos(positions * div_term[:-1])
-
+        pos = torch.arange(max_seq_len, dtype=torch.float).unsqueeze(1)
+        div = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) *
+                        -(math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
         self.register_buffer("pe", pe, persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Add sinusoidal PE to input embeddings."""
-        T = x.size(1)
-        return x + self.pe[:T].unsqueeze(0)
+        return x + self.pe[:x.size(1)].unsqueeze(0)
 
 
-def build_pe(pe_type: str, n_heads: int, head_dim: int, max_seq_len: int,
-             d_model: int = None) -> nn.Module:
-    """Factory for positional encodings.
+class NoOpPE(nn.Module):
+    """Identity PE for attention layers when sinusoidal is used.
 
-    Args:
-        pe_type: "rope", "adaptiverope", or "sinusoidal"
-        n_heads: number of attention heads
-        head_dim: dimension per head
-        max_seq_len: maximum sequence length
-        d_model: model dimension (for Sinusoidal)
+    Sinusoidal PE is applied at embedding level in EncoderDecoder,
+    so attention layers pass Q/K through unchanged.
     """
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return q, k
+
+
+def build_pe(pe_type: str, n_heads: int, head_dim: int, max_seq_len: int) -> nn.Module:
+    """Factory for attention-level positional encodings."""
     if pe_type == "rope":
         return RoPE(head_dim, max_seq_len)
-    if pe_type == "adaptiverope":
+    if pe_type in ("adaptiverope", "asrope3", "asrope2"):  # legacy aliases
         return AdaptiveRoPE(n_heads, head_dim, max_seq_len)
     if pe_type == "sinusoidal":
-        if d_model is None:
-            d_model = n_heads * head_dim
-        return Sinusoidal(d_model, max_seq_len)
-    raise ValueError(f"unknown pe_type={pe_type!r}; expected 'rope', 'adaptiverope', or 'sinusoidal'")
+        return NoOpPE()
+    raise ValueError(f"unknown pe_type={pe_type!r}; expected rope | adaptiverope | sinusoidal")

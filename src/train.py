@@ -40,6 +40,7 @@ class TrainConfig:
     max_seq_len: int = 256
     dropout: float = 0.1
     pe_type: str = "rope"
+    label_smoothing: float = 0.1
     batch_size: int = 64
     learning_rate: float = 5e-4
     weight_decay: float = 0.01
@@ -67,11 +68,12 @@ def _cosine(step: int, warmup: int, total: int) -> float:
     return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
 
-def _loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+def _loss(logits: torch.Tensor, labels: torch.Tensor, label_smoothing: float = 0.0) -> torch.Tensor:
     return F.cross_entropy(
         logits.reshape(-1, logits.size(-1)),
         labels.reshape(-1),
         ignore_index=-100,
+        label_smoothing=label_smoothing,
     )
 
 
@@ -230,7 +232,7 @@ def train(cfg: TrainConfig) -> dict:
             with torch.amp.autocast("cuda", dtype=torch.bfloat16,
                                     enabled=(cfg.use_bf16 and cfg.device == "cuda")):
                 logits = model(src, tgt_in)
-                loss = _loss(logits, labels)
+                loss = _loss(logits, labels, cfg.label_smoothing)
 
             (loss / cfg.grad_accum_steps).backward()
 

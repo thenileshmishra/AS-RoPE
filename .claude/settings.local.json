@@ -13,7 +13,20 @@
       "Bash(mkdir -p /tmp/neur_sanity/raw_data/wmt14)",
       "Bash(.venv/bin/python)",
       "Bash(NEUR_DRIVE_ROOT=/tmp/neur_sanity .venv/bin/python -m pipeline.step2_tokenize --max-seq-len 64)",
-      "Bash(.venv/bin/python -m pipeline.step3_train --pe-type rope --run-name rope_sanity --tokenized-train /tmp/neur_sanity/processed_data_wmt14/tokenized/train_wmt14_en_de.pt --tokenized-val /tmp/neur_sanity/processed_data_wmt14/tokenized/val_wmt14_en_de.pt --num-steps 50 --eval-every 25 --val-subset 32 --batch-size 8 --max-seq-len 64 --dataloader-workers 0 --no-use-compile --learning-rate 3e-4)"
+      "Bash(.venv/bin/python -m pipeline.step3_train --pe-type rope --run-name rope_sanity --tokenized-train /tmp/neur_sanity/processed_data_wmt14/tokenized/train_wmt14_en_de.pt --tokenized-val /tmp/neur_sanity/processed_data_wmt14/tokenized/val_wmt14_en_de.pt --num-steps 50 --eval-every 25 --val-subset 32 --batch-size 8 --max-seq-len 64 --dataloader-workers 0 --no-use-compile --learning-rate 3e-4)",
+      "Bash(.venv/bin/python -m pipeline.train_model --pe-type sinusoidal --run-name sinusoidal_sanity --tokenized-train processed_data_wmt14/tokenized/train_wmt14_en_de.pt --tokenized-val processed_data_wmt14/tokenized/val_wmt14_en_de.pt --num-steps 5 --eval-every 5 --val-subset 50 --batch-size 16 --max-seq-len 256 --dataloader-workers 0 --no-use-compile)",
+      "Bash(python3 -c 'import json; d=json.load\\(open\\('\\\\''__TRACKED_VAR__'\\\\''\\)\\); print\\(f\"pe={d.get\\('\\\\''pe_type'\\\\''\\)} BLEU={d['\\\\''overall'\\\\'']['\\\\''bleu'\\\\'']:.2f} chrF={d['\\\\''overall'\\\\'']['\\\\''chrf'\\\\'']:.2f} TER={d['\\\\''overall'\\\\'']['\\\\''ter'\\\\'']:.2f}\"\\)')",
+      "Bash(python3 -c \"import torch; print\\('torch:', torch.__version__\\); print\\('cuda:', torch.cuda.is_available\\(\\)\\)\")",
+      "Bash(nvidia-smi)",
+      "Read(//usr/bin/**)",
+      "Bash(/home/m240479cs/projects/Neur/.venv/bin/python3 -c \"import torch; print\\('torch:', torch.__version__\\); print\\('cuda:', torch.cuda.is_available\\(\\)\\); print\\('gpu:', torch.cuda.get_device_name\\(0\\) if torch.cuda.is_available\\(\\) else 'N/A'\\)\")",
+      "Bash(python3 -c \" import json,sys c=json.load\\(sys.stdin\\) print\\(f\\\\\"steps={c['num_steps']} batch={c['batch_size']} lr={c['learning_rate']} d={c['d_model']} heads={c['n_heads']} enc={c['n_enc_layers']} dec={c['n_dec_layers']} seq={c['max_seq_len']}\\\\\"\\) \")",
+      "Bash(awk '{print $2, $3}')",
+      "Bash(pkill -f \"run_experiments.sh\")",
+      "Bash(pkill -f \"pipeline.train_model\" sleep 3 ps aux)",
+      "Bash(awk '{print $2, $3, \"running\"}')",
+      "Bash(bibtex main *)",
+      "Bash(pdflatex -interaction=nonstopmode main.tex)"
     ]
   }
 }

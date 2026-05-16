@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> None:
 
     parser.add_argument("--pe-type", choices=["rope", "adaptiverope", "sinusoidal"],
                         default="rope", help="Positional encoding type")
+    parser.add_argument("--label-smoothing", type=float, default=0.1,
+                        help="Label smoothing for cross-entropy loss (default: 0.1)")
     parser.add_argument("--run-name", required=True,
                         help="Subdir under outputs/ for this run")
 
@@ -99,6 +101,7 @@ def main(argv: list[str] | None = None) -> None:
         max_seq_len=args.max_seq_len,
         dropout=args.dropout,
         pe_type=args.pe_type,
+label_smoothing=args.label_smoothing,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
@@ -120,8 +123,9 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     eff = cfg.batch_size * cfg.grad_accum_steps
-    print(f"[train] pe={cfg.pe_type} d={cfg.d_model} heads={cfg.n_heads} "
-          f"ff={cfg.d_ff} enc={cfg.n_enc_layers} dec={cfg.n_dec_layers} "
+    print(f"[train] pe={cfg.pe_type} label_smoothing={cfg.label_smoothing} "
+          f"d={cfg.d_model} heads={cfg.n_heads} ff={cfg.d_ff} "
+          f"enc={cfg.n_enc_layers} dec={cfg.n_dec_layers} "
           f"seq={cfg.max_seq_len} batch={cfg.batch_size}x{cfg.grad_accum_steps}={eff} "
           f"steps={cfg.num_steps}")
 
