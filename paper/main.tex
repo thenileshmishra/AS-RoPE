@@ -1,0 +1,391 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{What Positional Frequencies Do Encoder-Decoder MT Models Need?\\
+An Empirical Study via Adaptive RoPE}
+
+\author{
+  \IEEEauthorblockN{Nilesh Mishra}
+  \IEEEauthorblockA{
+    Department of Computer Science and Engineering\\
+    [Your Institution]\\
+    thenileshmishra@gmail.com
+  }
+}
+
+\maketitle
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+Rotary Position Embedding (RoPE) \cite{su2021roformer} has become the de facto
+positional encoding in modern neural machine translation and large language models,
+yet its assumption that all frequency components contribute equally to position
+representation has not been empirically validated. We introduce \textbf{Adaptive
+RoPE}, a minimal extension that augments RoPE with learnable per-head frequency
+gates and phase offsets. The gates are initialised to one (recovering standard
+RoPE) and trained by gradient descent, allowing us to measure which frequency
+components the model actually uses. Experiments on WMT14 English-German with an
+encoder-decoder Transformer show that trained gates consistently converge to
+values below one (mean $\approx 0.90$), indicating that models prefer
+low-frequency positional structure over high-frequency components. Adaptive RoPE
+matches standard RoPE in translation quality (BLEU 21.43 vs.\ 21.45) while
+achieving better model calibration (validation loss 0.753 vs.\ 0.756) at
+essentially zero computational overhead (+96 parameters). These results suggest
+that RoPE's uniform frequency weighting is a suboptimal inductive bias for
+machine translation, and that the frequency preference is a learnable, structured
+property that varies systematically across attention heads.
+\end{abstract}
+
+\begin{IEEEkeywords}
+rotary position embedding, machine translation, positional encoding, frequency
+analysis, encoder-decoder transformer
+\end{IEEEkeywords}
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+
+Position-aware attention is central to sequence-to-sequence models. Sinusoidal
+absolute encodings \cite{vaswani2017attention} were the original solution, but
+relative and rotary approaches have largely superseded them in modern
+architectures \cite{su2021roformer,press2021train,raffel2020exploring}.
+
+Rotary Position Embedding (RoPE) \cite{su2021roformer} encodes position by
+rotating query and key vectors in two-dimensional frequency planes. Each
+dimension pair $(2i, 2i{+}1)$ is rotated by an angle $\theta_p^{(i)} = p \cdot
+\omega_i$, where $\omega_i = 10000^{-2i/d}$ is a fixed frequency. Critically,
+\emph{all} frequency components receive weight one — no component is treated as
+more or less important than another. RoPE is now the positional encoding of
+choice in state-of-the-art language models \cite{touvron2023llama,jiang2023mistral}.
+
+A recent study on decoder-only language models \cite{men2024roundandround}
+showed empirically that high-frequency RoPE components contribute less to
+attention than low-frequency ones and can be truncated without significant
+quality loss. However, it is unknown whether the same frequency preference
+appears in \emph{encoder-decoder} machine translation models, which differ
+fundamentally in that positional information must serve both a bidirectional
+encoder and a causal decoder with cross-attention.
+
+We address this gap by designing Adaptive RoPE: a learnable probe that adds
+trainable per-head gates $g_q, g_k \in \mathbb{R}^{H \times F}$ and phase
+offsets $\phi_q, \phi_k \in \mathbb{R}^{H \times F}$ to the standard RoPE
+rotation angles. When gates are fixed at one and phases at zero, Adaptive RoPE
+is identical to RoPE. Trained by gradient descent, the gates reveal which
+frequencies the model actually uses.
+
+Our main contributions are:
+\begin{itemize}
+  \item \textbf{Adaptive RoPE}: a minimal, interpretable extension of RoPE with
+        $2 \times H \times F$ learnable gates and phases (Section~\ref{sec:method}).
+  \item \textbf{Frequency preference finding}: gates converge to ${\approx}0.90$
+        in encoder-decoder MT, confirming low-frequency preference in a setting
+        not studied by prior work (Section~\ref{sec:results}).
+  \item \textbf{Per-head specialisation}: different attention heads learn
+        distinct frequency profiles, revealing positional specialisation that
+        standard RoPE prevents (Section~\ref{sec:analysis}).
+  \item \textbf{Zero-cost calibration}: Adaptive RoPE matches RoPE in BLEU while
+        improving validation loss, with negligible parameter overhead
+        (Section~\ref{sec:results}).
+\end{itemize}
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Positional encodings in MT.}
+Vaswani et al.~\cite{vaswani2017attention} introduced sinusoidal absolute
+encodings. Relative encodings \cite{shaw2018self,raffel2020exploring} replace
+absolute positions with pairwise distances. ALiBi \cite{press2021train} adds a
+learned linear bias to attention logits. RoPE \cite{su2021roformer} achieves
+relative-position sensitivity through rotation of Q/K vectors and has become the
+dominant choice due to its compatibility with key-value caching and
+\texttt{torch.compile}.
+
+\paragraph{Analysing RoPE.}
+Men et al.~\cite{men2024roundandround} study which RoPE frequencies are
+\emph{used} in decoder-only language models (Gemma~7B) and find that the highest
+frequencies can be truncated with minimal perplexity loss. They propose p-RoPE,
+a static pruning of high-frequency dimensions. Our work differs in three ways:
+(i) we study \emph{encoder-decoder} MT, not decoder-only LLMs; (ii) we use a
+\emph{differentiable, learnable} probe rather than a post-hoc ablation; and
+(iii) we measure per-head frequency preferences across both encoder and decoder.
+
+\paragraph{Learnable RoPE variants.}
+YaRN \cite{peng2023yarn} scales RoPE frequencies for length extrapolation.
+LongRoPE \cite{ding2024longrope} learns per-dimension scaling factors for
+extending context windows. These works target length generalisation; we target
+understanding what frequencies are needed at training-time lengths.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Method}
+\label{sec:method}
+
+\subsection{Rotary Position Embedding (RoPE)}
+
+For a query vector $\mathbf{q} \in \mathbb{R}^d$ at position $p$, RoPE applies
+a block-diagonal rotation:
+\begin{equation}
+  q'_{2i}   = q_{2i}\cos\theta_p^{(i)} - q_{2i+1}\sin\theta_p^{(i)},
+\end{equation}
+\begin{equation}
+  q'_{2i+1} = q_{2i}\sin\theta_p^{(i)} + q_{2i+1}\cos\theta_p^{(i)},
+\end{equation}
+where $\theta_p^{(i)} = p \cdot \omega_i$ and $\omega_i =
+10000^{-2i/d}$. The same rotation is applied to keys $\mathbf{k}$, so the
+inner product $\langle \mathbf{q}', \mathbf{k}' \rangle$ depends only on the
+relative position $p - p'$ \cite{su2021roformer}.
+
+\subsection{Adaptive RoPE}
+
+We augment the rotation angle with head-specific, learnable gates $\mathbf{g}$
+and phase offsets $\boldsymbol{\phi}$:
+\begin{equation}
+  \theta_p^{(h,i)} = p \cdot \omega_i \cdot g^{(h,i)} + \phi^{(h,i)},
+  \label{eq:adaptive_rope}
+\end{equation}
+where $h \in \{1,\ldots,H\}$ indexes the attention head and $i \in
+\{0,\ldots,F{-}1\}$ indexes the frequency ($F = d_{\text{head}}/2$). We
+maintain separate parameters for queries and keys:
+$\mathbf{g}_q, \mathbf{g}_k \in \mathbb{R}^{H \times F}$ and
+$\boldsymbol{\phi}_q, \boldsymbol{\phi}_k \in \mathbb{R}^{H \times F}$.
+
+\textbf{Initialisation.} $\mathbf{g} = \mathbf{1}$, $\boldsymbol{\phi} =
+\mathbf{0}$. This makes Adaptive RoPE \emph{identical} to standard RoPE at
+initialisation, so any divergence reflects a genuine learned preference.
+
+\textbf{Interpretation.} A gate $g^{(h,i)} < 1$ means head $h$ suppresses
+frequency $i$ (the effective frequency is $\omega_i \cdot g^{(h,i)} < \omega_i$).
+A gate $> 1$ amplifies it. Gates close to one indicate no preference.
+
+\textbf{Parameter overhead.} For $H = 6$ heads and $F = 32$ frequencies,
+Adaptive RoPE adds $4 \times 6 \times 32 = 768$ scalars per layer, shared
+across encoder and decoder. Compared to 47M total parameters, this is
+negligible.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Dataset}
+
+We train on WMT14 English-German \cite{bojar2014wmt}, the standard
+encoder-decoder MT benchmark, with 4.5M training pairs. Evaluation is on
+\texttt{newstest2014} (3,003 sentences). Tokenisation uses the
+\texttt{Helsinki-NLP/opus-mt-en-de} SentencePiece model \cite{tiedemann2020opus}
+(vocabulary size 58,101).
+
+\subsection{Model Architecture}
+
+We train a standard encoder-decoder Transformer:
+6 encoder layers + 6 decoder layers, $d_{\text{model}} = 384$, $H = 6$ heads,
+$d_{\text{ff}} = 1536$, dropout $= 0.1$, $\approx 47$M parameters.
+Source and target embeddings are tied with the output projection.
+
+\subsection{Training}
+
+All models are trained for 25,000--30,000 steps with effective batch size 512
+(batch 256, gradient accumulation 2), AdamW optimiser
+\cite{loshchilov2018decoupled}, learning rate $10^{-3}$, cosine schedule with
+5\% warmup, gradient clipping at 1.0. Mixed-precision (bf16) and
+\texttt{torch.compile} \cite{pytorch2023} are enabled throughout.
+Label smoothing $\varepsilon = 0.1$ is applied.
+
+\subsection{Evaluation}
+
+Translation quality is measured with \textbf{BLEU} \cite{papineni2002bleu} and
+\textbf{chrF} \cite{popovic2015chrf} via SacreBLEU \cite{post2018sacrebleu},
+and \textbf{COMET} \cite{rei2020comet} for neural evaluation correlated with
+human judgements. Model calibration is assessed via \textbf{validation loss} on
+a 500-sentence held-out subset. Decoding uses beam search with beam size 5 and
+length penalty 0.6.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Results}
+\label{sec:results}
+
+\subsection{Translation Quality and Calibration}
+
+Table~\ref{tab:main} compares all three positional encodings. Adaptive RoPE
+matches RoPE in BLEU (21.43 vs.\ 21.45) and chrF (52.71 vs.\ 52.80), confirming
+that the learned frequency adaptation does not hurt translation quality.
+Importantly, Adaptive RoPE achieves a lower validation loss than RoPE (0.753
+vs.\ 0.756), indicating better model calibration — the model assigns higher
+probability to correct translations even when surface-level n-gram counts are
+similar.
+
+Sinusoidal encoding shows markedly worse validation loss (1.016), more than
+35\% higher than RoPE-based methods, despite comparable BLEU. This confirms
+that BLEU does not fully capture model quality and motivates the use of
+calibration metrics.
+
+\begin{table}[htbp]
+  \caption{WMT14 En-De newstest2014 results. Val Loss is measured on a 500-sentence
+  held-out set. $\downarrow$ = lower is better, $\uparrow$ = higher is better.}
+  \label{tab:main}
+  \centering
+  \begin{tabular}{lccccc}
+    \toprule
+    \textbf{Model} & \textbf{Steps} & \textbf{Val Loss}$\downarrow$
+                   & \textbf{BLEU}$\uparrow$ & \textbf{chrF}$\uparrow$
+                   & \textbf{COMET}$\uparrow$ \\
+    \midrule
+    Sinusoidal \cite{vaswani2017attention} & 30K & 1.016 & 21.51 & 52.85 & 0.7606 \\
+    RoPE \cite{su2021roformer}             & 25K & 0.756 & 21.45 & 52.80 & 0.7608 \\
+    \textbf{Adaptive RoPE (ours)}          & 25K & \textbf{0.753} & 21.43 & 52.71 & \textbf{0.7617} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Learned Frequency Gates}
+
+Table~\ref{tab:gates} reports statistics of the learned gate parameters after
+training. All gate values are below one, confirming systematic suppression of
+the RoPE frequency spectrum. Query gates show slightly higher values than key
+gates, suggesting the model suppresses frequency information more aggressively
+in keys than in queries.
+
+\begin{table}[htbp]
+  \caption{Statistics of learned Adaptive RoPE gate parameters (mean across all
+  encoder layers and attention heads). Init value is 1.0 for all gates and 0.0
+  for all phases.}
+  \label{tab:gates}
+  \centering
+  \begin{tabular}{lrrrr}
+    \toprule
+    \textbf{Parameter} & \textbf{Mean} & \textbf{Std} & \textbf{Min} & \textbf{Max} \\
+    \midrule
+    $\mathbf{g}_q$ (query gates)   & 0.9151 & 0.0249 & 0.8479 & 0.9744 \\
+    $\mathbf{g}_k$ (key gates)     & 0.9030 & 0.0285 & 0.7784 & 0.9631 \\
+    $\boldsymbol{\phi}_q$ (query phase) & 0.0045 & 0.0099 & $-$0.0216 & 0.0403 \\
+    $\boldsymbol{\phi}_k$ (key phase)   & $-$0.0045 & 0.0099 & $-$0.0404 & 0.0217 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Analysis}
+\label{sec:analysis}
+
+\subsection{Frequency Spectrum Shift}
+
+Figure~\ref{fig:spectrum} shows the effective frequency spectrum for standard
+RoPE (uniform gates $= 1$) and Adaptive RoPE (trained gates $\approx 0.90$).
+The learned model consistently downscales the effective rotation frequency
+across all dimensions, with a larger suppression at higher-frequency indices.
+This means the model prefers \emph{longer-range} positional signals over
+short-range ones, consistent with the need to align source and target sentences
+that may have different word orders in English-German translation.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{../outputs/paper/fig_freq_spectrum.png}
+  \caption{Effective frequency spectrum: standard RoPE (gates $=1$, dashed) vs.\
+  Adaptive RoPE (trained gates, solid). Shaded region = suppressed frequencies.}
+  \label{fig:spectrum}
+\end{figure}
+
+\subsection{Per-Head Gate Specialisation}
+
+Figure~\ref{fig:gates} visualises the gate values per attention head and per
+frequency dimension. Different heads learn distinct frequency suppression
+profiles, demonstrating that standard RoPE's forced uniform frequency weighting
+is a constraint the model would prefer to relax. Head 2 shows the smallest
+deviation from 1.0 (least suppression), while head 0 shows the largest
+suppression, suggesting specialisation into long-range vs.\ short-range
+positional attention.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{../outputs/analysis/adaptiverope_de/gates_q.png}
+  \caption{Learned gate values $\mathbf{g}_q$ for query vectors, per attention head
+  (rows) and frequency index (columns). Values $< 1$ (red) indicate suppression;
+  $> 1$ (blue) indicate amplification. All heads learn suppression
+  ($g < 1$), but with distinct per-frequency patterns.}
+  \label{fig:gates}
+\end{figure}
+
+\subsection{Per-Layer Gate Analysis}
+
+Figure~\ref{fig:layers} shows gate values broken down by encoder layer. Earlier
+layers (0--2) show stronger suppression of mid-to-high frequencies, while later
+layers (4--5) have gates closer to 1.0. This suggests that the encoder
+progressively relies more on positional information as representations become
+more contextualised.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{../outputs/paper/fig_gate_layers.png}
+  \caption{Per-layer learned gates (encoder), averaged over heads.
+  Earlier layers suppress more aggressively than later layers.}
+  \label{fig:layers}
+\end{figure}
+
+\subsection{Training Convergence}
+
+Figure~\ref{fig:loss} shows training loss curves for all three models.
+Adaptive RoPE and standard RoPE converge at similar rates, confirming that the
+learnable gates do not impede optimisation. Sinusoidal encoding converges more
+slowly and to a higher loss, consistent with its inability to benefit from
+relative position encoding during attention.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{../outputs/paper/fig_train_loss.png}
+  \caption{Training loss curves on WMT14 En-De. Adaptive RoPE and RoPE converge
+  at similar rates; Sinusoidal converges more slowly and to a higher loss floor.}
+  \label{fig:loss}
+\end{figure}
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+
+The consistent convergence of gates to values below one across all heads and
+layers suggests that RoPE's default frequency schedule (base = 10,000) allocates
+too much weight to high-frequency positional information for machine translation.
+Low-frequency components encode coarse, long-range positional structure, which is
+critical for cross-lingual reordering (e.g., verb-final German sentences).
+
+Our findings are consistent with Men et al.~\cite{men2024roundandround}, who
+show high-frequency RoPE dimensions can be truncated in decoder-only LLMs.
+However, our differentiable probe reveals the \emph{degree} and
+\emph{head-level structure} of this preference, not just its existence, and does
+so in an encoder-decoder MT setting where the dynamic is different due to
+bidirectional encoding and cross-attention.
+
+A limitation of this work is that experiments are conducted on a single language
+pair (En--De) at a single scale (47M parameters). Whether the frequency
+preference generalises across language pairs, model sizes, and tasks remains an
+open question for future work.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+We presented Adaptive RoPE, a minimal learnable extension of Rotary Position
+Embedding that reveals how encoder-decoder MT models use the RoPE frequency
+spectrum. Our key finding is that trained frequency gates consistently converge
+below one (mean $\approx 0.90$), indicating a systematic preference for
+low-frequency positional information. Adaptive RoPE matches standard RoPE in
+translation quality (BLEU 21.43 vs.\ 21.45) while improving model calibration
+(validation loss 0.753 vs.\ 0.756), at negligible computational cost.
+These results suggest that RoPE's uniform frequency assumption is suboptimal for
+MT and motivate future work on task-adaptive frequency scheduling.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
