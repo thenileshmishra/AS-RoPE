@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from src.positional import Sinusoidal, build_pe
+from src.positional import Sinusoidal, ALiBi, build_pe
 
 
 class MultiHeadSelfAttention(nn.Module):
@@ -36,12 +36,26 @@ class MultiHeadSelfAttention(nn.Module):
 
         attn_mask = None
         is_causal = causal
+        alibi_bias = None
+        if isinstance(self.pe, ALiBi):
+            alibi_bias = self.pe.get_bias(T, self.n_heads)  # (1, H, T, T)
+
         if key_padding_mask is not None:
             # Build a float mask combining padding (and causal if requested),
             # because SDPA rejects attn_mask + is_causal together.
             pad_mask = key_padding_mask.view(B, 1, 1, T).expand(B, self.n_heads, T, T)
             attn_mask = torch.zeros(B, self.n_heads, T, T, dtype=q.dtype, device=q.device)
             attn_mask = attn_mask.masked_fill(pad_mask, float("-inf"))
+            if causal:
+                causal_mask = torch.triu(
+                    torch.ones(T, T, dtype=torch.bool, device=q.device), diagonal=1
+                )
+                attn_mask = attn_mask.masked_fill(causal_mask.view(1, 1, T, T), float("-inf"))
+                is_causal = False
+            if alibi_bias is not None:
+                attn_mask = attn_mask + alibi_bias.to(attn_mask.dtype)
+        elif alibi_bias is not None:
+            attn_mask = alibi_bias.expand(B, -1, -1, -1).to(q.dtype)
             if causal:
                 causal_mask = torch.triu(
                     torch.ones(T, T, dtype=torch.bool, device=q.device), diagonal=1

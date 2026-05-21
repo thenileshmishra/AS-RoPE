@@ -108,6 +108,103 @@ class Sinusoidal(nn.Module):
         return x + self.pe[:x.size(1)].unsqueeze(0)
 
 
+class ALiBi(nn.Module):
+    """Attention with Linear Biases (Press et al., 2022).
+
+    Replaces rotary PE with a static linear bias applied to attention scores.
+    Bias = -m * |i - j| where m is a head-specific slope.
+    No position-dependent rotation of Q/K — instead we add position bias to logits.
+    """
+
+    def __init__(self, n_heads: int, head_dim: int, max_seq_len: int):
+        super().__init__()
+        # Slopes: geometric sequence from 2^(-8/n_heads) to 2^(-8)
+        m = 2.0 ** (-8.0 / n_heads)
+        slopes = torch.tensor([m ** (i + 1) for i in range(n_heads)], dtype=torch.float32)
+        self.register_buffer("slopes", slopes, persistent=False)  # (H,)
+
+        # Precompute distance bias matrix: -slope * distance
+        positions = torch.arange(max_seq_len)
+        distance = positions.unsqueeze(0) - positions.unsqueeze(1)  # (T, T)
+        distance = distance.abs().unsqueeze(0)  # (1, T, T)
+        # bias will be slopes[:, None, None] * distance  => (H, T, T)
+        self.register_buffer("distance", distance, persistent=False)
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # ALiBi does not rotate Q/K; bias is added in attention score.
+        # We return Q/K unchanged and expect the attention module to add the bias.
+        return q, k
+
+    def get_bias(self, seq_len: int, n_heads: int | None = None) -> torch.Tensor:
+        """Return ALiBi bias of shape (1, H, T, T) to add to attention scores."""
+        T = seq_len
+        dist = self.distance[:, :T, :T]  # (1, T, T)
+        slopes = self.slopes.view(1, -1, 1, 1)  # (1, H, 1, 1)
+        return -slopes * dist  # (1, H, T, T)
+
+
+class GatesOnlyAdaptiveRoPE(nn.Module):
+    """AdaptiveRoPE ablation: learnable gates only, phases frozen at 0."""
+
+    def __init__(self, n_heads: int, head_dim: int, max_seq_len: int, base: float = 10000.0):
+        super().__init__()
+        if head_dim % 2 != 0:
+            raise ValueError(f"head_dim must be even, got {head_dim}")
+        self.n_freqs = head_dim // 2
+        inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
+        self.register_buffer("positions", torch.arange(max_seq_len).float(), persistent=False)
+        self.register_buffer("base_freqs", inv_freq, persistent=False)
+        self.gates_q = nn.Parameter(torch.ones(n_heads, self.n_freqs))
+        self.gates_k = nn.Parameter(torch.ones(n_heads, self.n_freqs))
+        # Phases are NOT parameters — frozen at 0
+        self.register_buffer("phase_q", torch.zeros(n_heads, self.n_freqs), persistent=False)
+        self.register_buffer("phase_k", torch.zeros(n_heads, self.n_freqs), persistent=False)
+
+    def _cos_sin(self, seq_len: int, gates: torch.Tensor,
+                 phase: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        pos = self.positions[:seq_len]
+        theta = (pos[:, None, None] * self.base_freqs[None, None, :] * gates[None, :, :]
+                 + phase[None, :, :]).permute(1, 0, 2).unsqueeze(0)
+        return theta.cos(), theta.sin()
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        T = q.size(-2)
+        cos_q, sin_q = self._cos_sin(T, self.gates_q, self.phase_q)
+        cos_k, sin_k = self._cos_sin(T, self.gates_k, self.phase_k)
+        return _apply_rot(q, cos_q, sin_q), _apply_rot(k, cos_k, sin_k)
+
+
+class PhasesOnlyAdaptiveRoPE(nn.Module):
+    """AdaptiveRoPE ablation: learnable phases only, gates frozen at 1."""
+
+    def __init__(self, n_heads: int, head_dim: int, max_seq_len: int, base: float = 10000.0):
+        super().__init__()
+        if head_dim % 2 != 0:
+            raise ValueError(f"head_dim must be even, got {head_dim}")
+        self.n_freqs = head_dim // 2
+        inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
+        self.register_buffer("positions", torch.arange(max_seq_len).float(), persistent=False)
+        self.register_buffer("base_freqs", inv_freq, persistent=False)
+        # Gates are NOT parameters — frozen at 1
+        self.register_buffer("gates_q", torch.ones(n_heads, self.n_freqs), persistent=False)
+        self.register_buffer("gates_k", torch.ones(n_heads, self.n_freqs), persistent=False)
+        self.phase_q = nn.Parameter(torch.zeros(n_heads, self.n_freqs))
+        self.phase_k = nn.Parameter(torch.zeros(n_heads, self.n_freqs))
+
+    def _cos_sin(self, seq_len: int, gates: torch.Tensor,
+                 phase: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        pos = self.positions[:seq_len]
+        theta = (pos[:, None, None] * self.base_freqs[None, None, :] * gates[None, :, :]
+                 + phase[None, :, :]).permute(1, 0, 2).unsqueeze(0)
+        return theta.cos(), theta.sin()
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        T = q.size(-2)
+        cos_q, sin_q = self._cos_sin(T, self.gates_q, self.phase_q)
+        cos_k, sin_k = self._cos_sin(T, self.gates_k, self.phase_k)
+        return _apply_rot(q, cos_q, sin_q), _apply_rot(k, cos_k, sin_k)
+
+
 class NoOpPE(nn.Module):
     """Identity PE for attention layers when sinusoidal is used.
 
@@ -118,6 +215,25 @@ class NoOpPE(nn.Module):
         return q, k
 
 
+def apply_position_interpolation(model: nn.Module, scale: float) -> None:
+    """Apply Position Interpolation (PI) to all RoPE modules in a model.
+
+    PI scales the base frequency by `scale`, effectively compressing the
+    position indices so that longer sequences fit within the trained context.
+    Chen et al., 2023: https://arxiv.org/abs/2306.15595
+    """
+    for module in model.modules():
+        if isinstance(module, RoPE):
+            device = module.cos_cache.device
+            head_dim = module.cos_cache.shape[-1] * 2
+            new_base = 10000.0 * scale
+            inv_freq = 1.0 / (new_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
+            positions = torch.arange(module.cos_cache.shape[0], dtype=torch.float32)
+            freqs = torch.outer(positions, inv_freq)
+            module.cos_cache = freqs.cos().to(device)
+            module.sin_cache = freqs.sin().to(device)
+
+
 def build_pe(pe_type: str, n_heads: int, head_dim: int, max_seq_len: int) -> nn.Module:
     """Factory for attention-level positional encodings."""
     if pe_type == "rope":
@@ -126,4 +242,10 @@ def build_pe(pe_type: str, n_heads: int, head_dim: int, max_seq_len: int) -> nn.
         return AdaptiveRoPE(n_heads, head_dim, max_seq_len)
     if pe_type == "sinusoidal":
         return NoOpPE()
-    raise ValueError(f"unknown pe_type={pe_type!r}; expected rope | adaptiverope | sinusoidal")
+    if pe_type == "alibi":
+        return ALiBi(n_heads, head_dim, max_seq_len)
+    if pe_type == "gatesonly":
+        return GatesOnlyAdaptiveRoPE(n_heads, head_dim, max_seq_len)
+    if pe_type == "phasesonly":
+        return PhasesOnlyAdaptiveRoPE(n_heads, head_dim, max_seq_len)
+    raise ValueError(f"unknown pe_type={pe_type!r}; expected rope | adaptiverope | sinusoidal | alibi | gatesonly | phasesonly")

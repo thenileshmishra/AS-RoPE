@@ -41,7 +41,7 @@ def _add_bool(parser, name, default, help_text):
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Train encoder-decoder with RoPE or Adaptive RoPE")
 
-    parser.add_argument("--pe-type", choices=["rope", "adaptiverope", "sinusoidal"],
+    parser.add_argument("--pe-type", choices=["rope", "adaptiverope", "sinusoidal", "alibi", "gatesonly", "phasesonly"],
                         default="rope", help="Positional encoding type")
     parser.add_argument("--label-smoothing", type=float, default=0.1,
                         help="Label smoothing for cross-entropy loss (default: 0.1)")

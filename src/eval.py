@@ -49,7 +49,6 @@ def load_model_from_checkpoint(checkpoint_path: str, device: str) -> tuple[Encod
         n_dec_layers=int(cfg["n_dec_layers"]),
         max_seq_len=int(cfg["max_seq_len"]),
         pe_type=str(cfg["pe_type"]),
-        cross_pe_type=str(cfg.get("cross_pe_type", "none")),
         dropout=float(cfg.get("dropout", 0.0)),
         tie_embeddings=bool(cfg.get("tie_embeddings", True)),
         use_checkpoint=False,  # never checkpoint during eval
