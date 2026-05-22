@@ -140,10 +140,10 @@ def train(cfg: TrainConfig) -> dict:
     train_ds = MTPairDatasetCached(cfg.tokenized_train)
     val_ds = MTPairDatasetCached(cfg.tokenized_val)
     meta = train_ds.meta
-    pad_id = int(meta["pad_id"])
-    eos_id = int(meta["eos_id"])
-    bos_id = int(meta["bos_id"])
-    vocab_size = int(meta["vocab_size"])
+    pad_id = int(meta.get("pad_id", 0))
+    eos_id = int(meta.get("eos_id", 0))
+    bos_id = int(meta.get("bos_id", pad_id))
+    vocab_size = int(meta.get("vocab_size", len(train_ds) + 100))
     print(f"[train] pe={cfg.pe_type} vocab={vocab_size} pad={pad_id} bos={bos_id} eos={eos_id}")
     print(f"[train] train={len(train_ds):,}  val={len(val_ds):,}")
 

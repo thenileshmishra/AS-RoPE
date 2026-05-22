@@ -28,33 +28,50 @@
 
 ---
 
+## ⚠️ CRITICAL FIX APPLIED
+
+**Problem discovered:** Existing checkpoints were trained with **inconsistent hyperparameters**:
+- `rope_de`: seq=128, batch=256, steps=25K, lr=0.001
+- `sinusoidal_de`: seq=256, batch=256, steps=30K, lr=0.001  ← DIFFERENT
+- `rope_hi`: seq=192, batch=256, steps=75K, lr=0.0005     ← DIFFERENT from other Hi-En
+- Our first new run (`rope_de_s43`): seq=256, batch=512     ← WRONG
+
+**This would make direct comparisons INVALID.** Reviewers would reject the paper.
+
+**Fix applied:**
+- ❌ Deleted incorrect `rope_de_s43` and `rope_de_s44`
+- ✅ Retraining ALL new runs with **consistent hyperparameters per language**
+
 ## Training Status 🔄
 
-**Currently running:** `rope_de_s43` (step ~1100 / 25000)
+**Currently running:** `rope_de_s43` (seq=128, batch=256 — matching original `rope_de`)
 
-**Total jobs queued:** 17
+**Total jobs queued:** 17 (all with corrected params)
 
-| Run Name | PE Type | Lang | Seed | Status |
-|----------|---------|------|------|--------|
-| rope_de_s43 | RoPE | En-De | 43 | 🔄 Running |
-| rope_de_s44 | RoPE | En-De | 44 | ⏳ Queued |
-| adaptiverope_de_s43 | AdaptiveRoPE | En-De | 43 | ⏳ Queued |
-| adaptiverope_de_s44 | AdaptiveRoPE | En-De | 44 | ⏳ Queued |
-| sinusoidal_de_s43 | Sinusoidal | En-De | 43 | ⏳ Queued |
-| sinusoidal_de_s44 | Sinusoidal | En-De | 44 | ⏳ Queued |
-| gatesonly_de_s42 | GatesOnly | En-De | 42 | ⏳ Queued |
-| gatesonly_de_s43 | GatesOnly | En-De | 43 | ⏳ Queued |
-| gatesonly_de_s44 | GatesOnly | En-De | 44 | ⏳ Queued |
-| phasesonly_de_s42 | PhasesOnly | En-De | 42 | ⏳ Queued |
-| phasesonly_de_s43 | PhasesOnly | En-De | 43 | ⏳ Queued |
-| phasesonly_de_s44 | PhasesOnly | En-De | 44 | ⏳ Queued |
-| gatesonly_hi_s42 | GatesOnly | Hi-En | 42 | ⏳ Queued |
-| phasesonly_hi_s42 | PhasesOnly | Hi-En | 42 | ⏳ Queued |
-| sinusoidal_bn_s42 | Sinusoidal | Bn-En | 42 | ⏳ Queued |
-| gatesonly_bn_s42 | GatesOnly | Bn-En | 42 | ⏳ Queued |
-| phasesonly_bn_s42 | PhasesOnly | Bn-En | 42 | ⏳ Queued |
+| Run Name | PE Type | Lang | Seed | Params | Status |
+|----------|---------|------|------|--------|--------|
+| rope_de_s43 | RoPE | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | 🔄 Running |
+| rope_de_s44 | RoPE | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| adaptiverope_de_s43 | AdaptiveRoPE | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| adaptiverope_de_s44 | AdaptiveRoPE | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| sinusoidal_de_s43 | Sinusoidal | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| sinusoidal_de_s44 | Sinusoidal | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| gatesonly_de_s42 | GatesOnly | En-De | 42 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| gatesonly_de_s43 | GatesOnly | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| gatesonly_de_s44 | GatesOnly | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| phasesonly_de_s42 | PhasesOnly | En-De | 42 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| phasesonly_de_s43 | PhasesOnly | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| phasesonly_de_s44 | PhasesOnly | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
+| gatesonly_hi_s42 | GatesOnly | Hi-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
+| phasesonly_hi_s42 | PhasesOnly | Hi-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
+| sinusoidal_bn_s42 | Sinusoidal | Bn-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
+| gatesonly_bn_s42 | GatesOnly | Bn-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
+| phasesonly_bn_s42 | PhasesOnly | Bn-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
 
-**ETA:** ~3–4 days (each run ~4–5h on A100)
+**ETA:** ~3–4 days on A100
+- En-De runs: ~3h each × 12 runs = ~36h
+- Hi-En runs: ~2h each × 2 runs = ~4h  
+- Bn-En runs: ~2h each × 3 runs = ~6h
 
 **Already completed (from before):**
 - En-De: `rope_de`, `asrope3_de`, `sinusoidal_de` (seed 42)
@@ -113,8 +130,12 @@ ls outputs/metrics/*_de_eval/eval_summary.json
 1. **Single architecture** — only encoder-decoder Transformer (47M). Frame as "controlled setting."
 2. **No ALiBi training** — OOM issues on A100 with batch 512. We have the code but didn't train it.
 3. **No YaRN** — not implemented (optional baseline; PI covers interpolation)
-4. **Short sequences** — max_seq_len=256. Frame as "analysis of standard MT lengths" rather than "long-context."
+4. **Short sequences** — max_seq_len=128/192. Frame as "analysis of standard MT lengths" rather than "long-context."
 5. **Only 3 seeds** — minimum viable; sufficient for Findings/Workshop
+6. **Minor hyperparameter inconsistency in legacy runs:**
+   - `sinusoidal_de` was trained with seq=256, steps=30K (others used seq=128, steps=25K)
+   - `rope_hi` was trained with batch=256 (other Hi-En used batch=64)
+   - **Solution:** Either retrain these two, or exclude them from direct comparison tables and only use them as supplementary results. All NEW runs use perfectly matched hyperparameters.
 
 ---
 
