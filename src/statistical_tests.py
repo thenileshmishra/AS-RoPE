@@ -111,7 +111,7 @@ def compare_methods(
         "wilcoxon_statistic": float(w_stat) if w_stat is not None else None,
         "wilcoxon_pvalue": float(w_pval) if w_pval is not None else None,
         "bootstrap_ci_95": [ci_lower, ci_upper],
-        "significant_at_05": (t_pval is not None and t_pval < 0.05),
+        "significant_at_05": bool(t_pval is not None and t_pval < 0.05),
     }
 
 

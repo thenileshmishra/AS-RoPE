@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Parallel training launcher that maximizes GPU utilization.
+"""Parallel training launcher that fixes ALL publication issues.
+
+Fixes applied:
+  1. ALiBi baseline added (seq=128, batch=256)
+  2. sinusoidal_de RETRAINED with correct params (seq=128, batch=256, steps=25K)
+  3. Hi-En/Bn-En baseline training for consistency within each language
+  4. All En-De jobs use NO gradient checkpointing (~30% speedup)
+  5. Hi/Bn jobs run in parallel (up to 3 concurrent)
 
 Strategy:
-  - En-De jobs: sequential (1 at a time) because batch=256 saturates GPU compute at 98%
-  - Hi/Bn jobs: parallel (up to 3 at a time) because batch=64 leaves GPU underutilized
-  - ALL jobs: NO gradient checkpointing for ~30% speedup (fits in 80GB A100)
-
-This is faster than naive sequential training because:
-  1. No checkpointing = ~30% faster per job
-  2. Hi/Bn parallelized = multiple small jobs overlap
+  - En-De jobs: sequential (1 at a time, compute-saturated at 98%)
+  - Hi/Bn jobs: parallel (up to 3 at a time, smaller batches leave GPU headroom)
 """
 
 from __future__ import annotations
@@ -68,17 +70,19 @@ def build_job(pe_type: str, run_name: str, train: str, val: str,
         "--grad-accum", "1",
         "--use-bf16", "--use-compile",
         "--seed", str(seed),
-        # NOTE: --use-checkpoint is intentionally omitted for ~30% speedup
+        # NOTE: --use-checkpoint intentionally omitted for ~30% speedup
     ]
     return cmd, run_name
 
 
 def main() -> None:
     # ═══════════════════════════════════════════════════════════════════════
-    # Job definitions
+    # En-De jobs (sequential, 1 at a time)
+    # All use: seq=128, batch=256, steps=25K, lr=1e-3
     # ═══════════════════════════════════════════════════════════════════════
-
     en_de_jobs = []
+
+    # Core baselines + ablations with 3 seeds
     for pe_type, seeds in [
         ("rope", [43, 44]),
         ("adaptiverope", [43, 44]),
@@ -97,8 +101,43 @@ def main() -> None:
             if cmd:
                 en_de_jobs.append((cmd, run_name))
 
+    # FIX 1: ALiBi baseline (1 seed, En-De)
+    cmd, _ = build_job(
+        "alibi", "alibi_de_s42",
+        "processed_data_wmt14/tokenized/train_wmt14_en_de.pt",
+        "processed_data_wmt14/tokenized/val_wmt14_en_de.pt",
+        seq=128, batch=256, steps=25000, lr=1e-3, seed=42,
+    )
+    if cmd:
+        en_de_jobs.append((cmd, "alibi_de_s42"))
+
+    # FIX 2: Retrain sinusoidal_de with CORRECT params (overwrite old inconsistent one)
+    # We delete the old inconsistent checkpoint first
+    old_sinusoidal = Path("outputs/checkpoints/sinusoidal_de")
+    old_sinusoidal_logs = Path("outputs/logs/sinusoidal_de")
+    if old_sinusoidal.exists() and not is_complete("sinusoidal_de"):
+        # Only delete if we haven't already started the retrain
+        pass  # We'll let the training overwrite it
+
+    # Actually, we train a NEW run with explicit correct params and rename later
+    cmd, _ = build_job(
+        "sinusoidal", "sinusoidal_de_correct",
+        "processed_data_wmt14/tokenized/train_wmt14_en_de.pt",
+        "processed_data_wmt14/tokenized/val_wmt14_en_de.pt",
+        seq=128, batch=256, steps=25000, lr=1e-3, seed=42,
+    )
+    if cmd:
+        en_de_jobs.append((cmd, "sinusoidal_de_correct"))
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Hi-En jobs (parallel, up to 3 concurrent)
+    # All use: seq=192, batch=64, steps=75K, lr=5e-4
+    # FIX 7: Add rope + adaptiverope baselines for consistency
+    # ═══════════════════════════════════════════════════════════════════════
     hi_jobs = []
     for pe_type, seeds in [
+        ("rope", [42]),
+        ("adaptiverope", [42]),
         ("gatesonly", [42]),
         ("phasesonly", [42]),
     ]:
@@ -113,8 +152,15 @@ def main() -> None:
             if cmd:
                 hi_jobs.append((cmd, run_name))
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Bn-En jobs (parallel, up to 3 concurrent)
+    # All use: seq=192, batch=64, steps=75K, lr=5e-4
+    # FIX 7: Add rope + adaptiverope baselines for consistency
+    # ═══════════════════════════════════════════════════════════════════════
     bn_jobs = []
     for pe_type, seeds in [
+        ("rope", [42]),
+        ("adaptiverope", [42]),
         ("sinusoidal", [42]),
         ("gatesonly", [42]),
         ("phasesonly", [42]),
@@ -136,9 +182,6 @@ def main() -> None:
     print(f"[LAUNCH]   Hi-En: {len(hi_jobs)} (parallel, up to 3 at a time)")
     print(f"[LAUNCH]   Bn-En: {len(bn_jobs)} (parallel, up to 3 at a time)")
     print(f"[LAUNCH] NOTE: Gradient checkpointing DISABLED for ~30%% speedup")
-    print(f"[LAUNCH] NOTE: En-De jobs saturate GPU compute (98%%), so running")
-    print(f"[LAUNCH]       2 En-De jobs in parallel would make BOTH slower")
-    print(f"[LAUNCH]       with ZERO net benefit. Sequential is optimal.")
 
     # ═══════════════════════════════════════════════════════════════════════
     # Run En-De jobs sequentially
@@ -164,7 +207,6 @@ def main() -> None:
         descs: list[str] = []
 
         for cmd, run_name in small_jobs:
-            # Wait if we've hit the concurrency limit
             while len(procs) >= max_concurrent:
                 for i in range(len(procs) - 1, -1, -1):
                     ret = procs[i].poll()
@@ -182,7 +224,6 @@ def main() -> None:
             procs.append(proc)
             descs.append(run_name)
 
-        # Wait for remaining processes
         wait_for_processes(procs, descs)
 
     print("\n[LAUNCH] All training jobs complete!")

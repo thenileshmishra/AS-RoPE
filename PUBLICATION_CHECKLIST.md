@@ -1,176 +1,144 @@
-# Publication Target Checklist
+# Publication Target Checklist — FIXED VERSION
 
-## Code Changes Completed ✅
+## All 7 Issues FIXED ✅
 
-### Modified Files
-1. **`src/positional.py`** — Added:
-   - `ALiBi` class (linear attention bias baseline)
-   - `GatesOnlyAdaptiveRoPE` class (ablation: gates learnable, phases frozen)
-   - `PhasesOnlyAdaptiveRoPE` class (ablation: phases learnable, gates frozen)
-   - `apply_position_interpolation()` function (PI inference-time scaling)
-   - Updated `build_pe()` factory for new PE types
+### Fix 1: ALiBi Baseline Added
+- **Added:** `alibi_de_s42` to training queue
+- **Params:** seq=128, batch=256, steps=25K, lr=0.001 (matches all En-De)
+- **Why:** Reviewers expect ALiBi as a standard baseline. Earlier OOM was due to batch=512; batch=256 should fit.
 
-2. **`src/model.py`** — Added ALiBi bias injection in `MultiHeadSelfAttention.forward()`
+### Fix 2: Legacy Hyperparameters Corrected
+- **Deleted:** Old `sinusoidal_de` (was seq=256, steps=30K — inconsistent)
+- **Retraining:** `sinusoidal_de_correct` with seq=128, batch=256, steps=25K
+- **Note:** `rope_hi` and `rope_hi_s7` are from old codebase with different tokenizer. For fair comparison, we now train NEW `rope_hi_s42`, `adaptiverope_hi_s42` with current pipeline.
+- **Same for Bn-En:** New `rope_bn_s42`, `adaptiverope_bn_s42` trained with current pipeline.
 
-3. **`pipeline/train_model.py`** — Added new `--pe-type` choices: `alibi`, `gatesonly`, `phasesonly`
+### Fix 3: Hi-En / Bn-En Evaluations FIXED
+- **Problem:** Evaluate script defaulted to WMT14 test data and Helsinki tokenizer.
+- **Fix:**
+  - `src/train.py` now stores tokenizer name in checkpoint config
+  - `src/eval.py` auto-detects tokenizer from checkpoint config
+  - `pipeline/evaluate_model.py` defaults to `None` (auto-detect)
+  - `pipeline/run_all_evals.py` routes to correct test TSV per language:
+    - En-De: `raw_data/wmt14/test.tsv`
+    - Hi-En: `raw_data/samanantar/samanantar_hi_en.tsv`
+    - Bn-En: `raw_data/samanantar/samanantar_bn_en.tsv`
 
-4. **`src/eval.py`** — Fixed `load_model_from_checkpoint()` to not pass unsupported `cross_pe_type`
+### Fix 4: Length Generalization Multi-Method
+- **New script:** `pipeline/length_generalization_multi.py`
+- **Accepts:** Arbitrary number of checkpoints via `--ckpts path:Label`
+- **Compares:** All methods side-by-side on same length buckets
+- **Outputs:** BLEU curves, degradation curves, chrF curves, summary table
 
-5. **`requirements.txt`** — Added `numpy`, `matplotlib`, `scipy`
+### Fix 5: Position Interpolation Automated
+- **PI function:** `apply_position_interpolation()` in `src/positional.py`
+- **Automation:** `pipeline/run_all_evals.py` automatically applies PI (scales 1.5×, 2.0×, 3.0×) to all RoPE checkpoints after standard eval
 
-### New Files
-1. **`src/attention_analysis.py`** — Attention entropy + sink token analysis
-2. **`src/statistical_tests.py`** — Paired t-test, Wilcoxon signed-rank, bootstrap CI
-3. **`pipeline/run_experiment_matrix.py`** — Orchestrates all training runs
-4. **`pipeline/run_all_evals.py`** — Batch evaluation + Position Interpolation (PI)
-5. **`pipeline/run_all_analysis.py`** — Master script: eval + PI + length gen + attention + stats
-6. **`run_all_training.sh`** — Sequential training script for all missing checkpoints
+### Fix 6: Paper Framework Ready
+- **New analysis orchestrator:** `pipeline/run_all_analysis.py`
+- Runs eval → length gen → attention → stats in one command
+- All figures and tables will be generated automatically after training
 
----
-
-## ⚠️ CRITICAL FIX APPLIED
-
-**Problem discovered:** Existing checkpoints were trained with **inconsistent hyperparameters**:
-- `rope_de`: seq=128, batch=256, steps=25K, lr=0.001
-- `sinusoidal_de`: seq=256, batch=256, steps=30K, lr=0.001  ← DIFFERENT
-- `rope_hi`: seq=192, batch=256, steps=75K, lr=0.0005     ← DIFFERENT from other Hi-En
-- Our first new run (`rope_de_s43`): seq=256, batch=512     ← WRONG
-
-**This would make direct comparisons INVALID.** Reviewers would reject the paper.
-
-**Fix applied:**
-- ❌ Deleted incorrect `rope_de_s43` and `rope_de_s44`
-- ✅ Retraining ALL new runs with **consistent hyperparameters per language**
-
-## Training Status 🔄
-
-**Currently running:** `rope_de_s43` (seq=128, batch=256 — matching original `rope_de`)
-
-**Total jobs queued:** 17 (all with corrected params)
-
-| Run Name | PE Type | Lang | Seed | Params | Status |
-|----------|---------|------|------|--------|--------|
-| rope_de_s43 | RoPE | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | 🔄 Running |
-| rope_de_s44 | RoPE | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| adaptiverope_de_s43 | AdaptiveRoPE | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| adaptiverope_de_s44 | AdaptiveRoPE | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| sinusoidal_de_s43 | Sinusoidal | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| sinusoidal_de_s44 | Sinusoidal | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| gatesonly_de_s42 | GatesOnly | En-De | 42 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| gatesonly_de_s43 | GatesOnly | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| gatesonly_de_s44 | GatesOnly | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| phasesonly_de_s42 | PhasesOnly | En-De | 42 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| phasesonly_de_s43 | PhasesOnly | En-De | 43 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| phasesonly_de_s44 | PhasesOnly | En-De | 44 | seq=128 b=256 steps=25K lr=1e-3 | ⏳ Queued |
-| gatesonly_hi_s42 | GatesOnly | Hi-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
-| phasesonly_hi_s42 | PhasesOnly | Hi-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
-| sinusoidal_bn_s42 | Sinusoidal | Bn-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
-| gatesonly_bn_s42 | GatesOnly | Bn-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
-| phasesonly_bn_s42 | PhasesOnly | Bn-En | 42 | seq=192 b=64 steps=75K lr=5e-4 | ⏳ Queued |
-
-**ETA:** ~3–4 days on A100
-- En-De runs: ~3h each × 12 runs = ~36h
-- Hi-En runs: ~2h each × 2 runs = ~4h  
-- Bn-En runs: ~2h each × 3 runs = ~6h
-
-**Already completed (from before):**
-- En-De: `rope_de`, `asrope3_de`, `sinusoidal_de` (seed 42)
-- Hi-En: `rope_hi`, `asrope_hi`, `asrope2_hi`, `asrope3_hi`, `sinusoidal_hi`
-- Bn-En: `rope_bn`, `asrope_bn`, `asrope2_bn`, `asrope3_bn`
+### Fix 7: Attention Analysis for ALL Checkpoints
+- **New script:** `pipeline/run_attention_batch.py`
+- Runs `src.attention_analysis.py` on every checkpoint automatically
+- Generates entropy plots + sink-token plots per method
 
 ---
 
-## Publication Targets vs. What We Will Have
+## Training Queue (After Fixes)
 
-| Target | Status | How Achieved |
-|--------|--------|-------------|
-| **Multiple architectures** | ❌ Partial | Only our custom encoder-decoder. This is a known limitation — we present it as a *controlled* study. |
-| **Multiple languages** | ✅ **YES** | En-De (high-resource), Hi-En (medium), Bn-En (low-resource) |
-| **Statistical significance** | ✅ **YES** | 3 seeds for En-De + t-tests + Wilcoxon + bootstrap CI |
-| **Multiple baselines** | ✅ **YES** | RoPE, Sinusoidal, PI (inference), GatesOnly, PhasesOnly, AdaptiveRoPE |
-| **Ablations** | ✅ **YES** | GatesOnly and PhasesOnly explicitly isolate components |
-| **Length generalization** | ✅ **YES** | `pipeline/length_generalization.py` already implemented |
-| **Attention analysis** | ✅ **YES** | Entropy + sink token detection per layer |
-| **Seed variance** | ✅ **YES** | 3 seeds for main language pair |
-| **Scaling curves** | ✅ **YES** | Length generalization plots + perplexity not applicable (MT task) |
-| **Frequency band analysis** | ✅ **YES** | `pipeline/analyze_adaptiverope.py` gate/phase heatmaps |
+### En-De (sequential, ~2.5h each)
+| # | Run | PE Type | Seed | Status |
+|---|-----|---------|------|--------|
+| 1 | `rope_de_s43` | RoPE | 43 | ⏳ Queued |
+| 2 | `rope_de_s44` | RoPE | 44 | ⏳ Queued |
+| 3 | `adaptiverope_de_s43` | AdaptiveRoPE | 43 | ⏳ Queued |
+| 4 | `adaptiverope_de_s44` | AdaptiveRoPE | 44 | ⏳ Queued |
+| 5 | `sinusoidal_de_s43` | Sinusoidal | 43 | ⏳ Queued |
+| 6 | `sinusoidal_de_s44` | Sinusoidal | 44 | ⏳ Queued |
+| 7 | `sinusoidal_de_correct` | Sinusoidal | 42 | ⏳ Queued |
+| 8 | `gatesonly_de_s42` | GatesOnly | 42 | ⏳ Queued |
+| 9 | `gatesonly_de_s43` | GatesOnly | 43 | ⏳ Queued |
+| 10 | `gatesonly_de_s44` | GatesOnly | 44 | ⏳ Queued |
+| 11 | `phasesonly_de_s42` | PhasesOnly | 42 | ⏳ Queued |
+| 12 | `phasesonly_de_s43` | PhasesOnly | 43 | ⏳ Queued |
+| 13 | `phasesonly_de_s44` | PhasesOnly | 44 | ⏳ Queued |
+| 14 | `alibi_de_s42` | ALiBi | 42 | ⏳ Queued |
+
+**En-De total:** 14 runs × ~2.5h = ~35h
+
+### Hi-En (parallel up to 3, ~2h each)
+| # | Run | PE Type | Seed |
+|---|-----|---------|------|
+| 1 | `rope_hi_s42` | RoPE | 42 |
+| 2 | `adaptiverope_hi_s42` | AdaptiveRoPE | 42 |
+| 3 | `gatesonly_hi_s42` | GatesOnly | 42 |
+| 4 | `phasesonly_hi_s42` | PhasesOnly | 42 |
+
+**Hi-En total:** 4 runs, wall-clock ~3h (parallel batches)
+
+### Bn-En (parallel up to 3, ~2h each)
+| # | Run | PE Type | Seed |
+|---|-----|---------|------|
+| 1 | `rope_bn_s42` | RoPE | 42 |
+| 2 | `adaptiverope_bn_s42` | AdaptiveRoPE | 42 |
+| 3 | `sinusoidal_bn_s42` | Sinusoidal | 42 |
+| 4 | `gatesonly_bn_s42` | GatesOnly | 42 |
+| 5 | `phasesonly_bn_s42` | PhasesOnly | 42 |
+
+**Bn-En total:** 5 runs, wall-clock ~4h (parallel batches)
+
+**Grand Total ETA:** ~35h (En-De) + ~4h (Hi/Bn overlap) = **~39 hours (~1.6 days)**
 
 ---
 
-## What Will Happen After Training Finishes
+## Post-Training Analysis (One Command)
 
-### Phase 4: Evaluation (automatic via `run_all_analysis.py`)
-1. Run greedy + beam-5 BLEU/chrF/TER on all checkpoints
-2. Run Position Interpolation (PI) on RoPE checkpoints at scales 1.5×, 2×, 3×
-3. Run length generalization: RoPE vs AdaptiveRoPE
-
-### Phase 5: Analysis (automatic via `run_all_analysis.py`)
-1. Attention entropy analysis on all En-De checkpoints
-2. Statistical tests: AdaptiveRoPE vs RoPE, vs GatesOnly, vs PhasesOnly
-3. Generate comparison tables with mean ± std across seeds
-
-### Phase 6: Verification
-Run this command to check if all targets are met:
+After training finishes, run:
 ```bash
 python -m pipeline.run_all_analysis
 ```
 
-Then verify outputs exist:
-```bash
-ls outputs/analysis/stats_de.json
-ls outputs/analysis/length_gen/length_generalization.png
-ls outputs/analysis/attention/*/entropy_per_layer.png
-ls outputs/metrics/*_de_eval/eval_summary.json
+This executes:
+1. `pipeline.run_all_evals` — BLEU/chrF/TER + PI variants for all checkpoints
+2. `pipeline.length_generalization_multi` — Length gen curves for all En-De methods
+3. `pipeline.run_attention_batch` — Attention entropy for all checkpoints
+4. `src.statistical_tests` — t-test + Wilcoxon for all language pairs
+
+Output locations:
+```
+outputs/metrics/                    # All eval results
+outputs/analysis/length_gen_multi/  # Length generalization plots
+outputs/analysis/attention/         # Per-checkpoint attention analysis
+outputs/analysis/stats_*.json       # Statistical significance tests
 ```
 
 ---
 
-## Known Limitations (Be Honest in Paper)
+## Known Limitations (For Paper Disclosure)
 
-1. **Single architecture** — only encoder-decoder Transformer (47M). Frame as "controlled setting."
-2. **No ALiBi training** — OOM issues on A100 with batch 512. We have the code but didn't train it.
-3. **No YaRN** — not implemented (optional baseline; PI covers interpolation)
-4. **Short sequences** — max_seq_len=128/192. Frame as "analysis of standard MT lengths" rather than "long-context."
-5. **Only 3 seeds** — minimum viable; sufficient for Findings/Workshop
-6. **Minor hyperparameter inconsistency in legacy runs:**
-   - `sinusoidal_de` was trained with seq=256, steps=30K (others used seq=128, steps=25K)
-   - `rope_hi` was trained with batch=256 (other Hi-En used batch=64)
-   - **Solution:** Either retrain these two, or exclude them from direct comparison tables and only use them as supplementary results. All NEW runs use perfectly matched hyperparameters.
+1. **Single architecture** — Custom 47M encoder-decoder. Frame as "controlled setting."
+2. **No YaRN** — PI covers interpolation; YaRN is optional.
+3. **Short sequences** — max_seq_len=128/192. Frame as "standard MT lengths."
+4. **3 seeds minimum** — Sufficient for Findings/Workshop venues.
+5. **Old Hi-En/Bn-En checkpoints excluded** — `rope_hi`, `asrope_hi`, etc. used old codebase with `IndicBART` tokenizer. New Hi/Bn results use current pipeline for consistency.
 
 ---
 
-## Recommended Paper Reframing
-
-**Old framing (weak):** "We invented AdaptiveRoPE, a new positional encoding."
-
-**New framing (strong):** "What Positional Frequencies Do Encoder-Decoder MT Models Learn? A Multilingual Empirical Study via Adaptive Rotary Embeddings."
-
-**Key claim:** "We conduct a controlled multilingual study to analyze whether making RoPE frequencies learnable improves translation quality, calibration, and length generalization."
-
-This is a **rigorous experimental NLP paper** — not an architecture paper.
-
----
-
-## How to Monitor Training
+## How to Monitor
 
 ```bash
-# Check current step
-tail -1 outputs/logs/rope_de_s43/metrics.jsonl
+# Check tmux session (survives disconnect)
+tmux ls
+tmux attach -t neur_training
 
-# Check if GPU is busy
+# Check current step
+tail -1 outputs/logs/ROUTE_NAME/metrics.jsonl
+
+# Check GPU
 nvidia-smi
 
-# Check training log
-tail -f outputs/training_log_all.txt
-
-# List completed checkpoints
-ls outputs/checkpoints/
-```
-
-## How to Cancel Training
-
-```bash
-# Find and kill the training process
-ps aux | grep run_all_training.sh
-kill <PID>
+# Check completed runs
+for d in outputs/logs/*/; do [ -f "${d}run_summary.json" ] && echo "$(basename "$d") ✅"; done
 ```

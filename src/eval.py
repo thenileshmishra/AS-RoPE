@@ -178,7 +178,7 @@ def evaluate_checkpoint(
     eval_tsv: str,
     output_dir: str,
     device: str,
-    tokenizer_name: str = "Helsinki-NLP/opus-mt-en-de",
+    tokenizer_name: str | None = None,
     max_new_tokens: int = 128,
     batch_size: int = 32,
     beam_size: int = 1,
@@ -190,6 +190,11 @@ def evaluate_checkpoint(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model, cfg = load_model_from_checkpoint(checkpoint_path, device)
+    # Auto-detect tokenizer from checkpoint config if not provided
+    if tokenizer_name is None:
+        tokenizer_name = cfg.get("tokenizer", "Helsinki-NLP/opus-mt-en-de")
+        if tokenizer_name is None:
+            tokenizer_name = "Helsinki-NLP/opus-mt-en-de"
     tokenizer = build_mt_tokenizer(tokenizer_name)
     bos_id = int(cfg["bos_id"])
     eos_id = int(cfg["eos_id"])

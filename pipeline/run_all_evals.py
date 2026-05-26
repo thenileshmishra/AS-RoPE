@@ -1,10 +1,13 @@
-"""Run evaluation on all trained checkpoints + apply Position Interpolation (PI).
+"""Run evaluation on all trained checkpoints + Position Interpolation (PI) variants.
 
-For each trained checkpoint, runs greedy + beam-5 evaluation.
-For RoPE checkpoints, additionally evaluates with PI at multiple scales.
+For each trained checkpoint:
+  1. Run greedy + beam-5 evaluation
+  2. For RoPE checkpoints: additionally evaluate with PI at multiple scales
+
+Auto-detects tokenizer from checkpoint config for cross-lingual compatibility.
 
 Usage:
-    python -m pipeline.run_all_evals --lang de --beam-size 5
+    python -m pipeline.run_all_evals
 """
 
 from __future__ import annotations
@@ -21,28 +24,10 @@ from src.positional import apply_position_interpolation
 from src.eval import load_model_from_checkpoint
 
 
-# Dataset configs
-DATASETS = {
-    "de": {
-        "test_tsv": "raw_data/wmt14/test.tsv",
-        "tokenizer": "Helsinki-NLP/opus-mt-en-de",
-    },
-    "hi": {
-        "test_tsv": "raw_data/samanantar/test.tsv",
-        "tokenizer": "Helsinki-NLP/opus-mt-en-de",
-    },
-    "bn": {
-        "test_tsv": None,
-        "tokenizer": "Helsinki-NLP/opus-mt-en-de",
-    },
-}
-
-
 def eval_checkpoint(
     ckpt_path: str,
     run_name: str,
     test_tsv: str,
-    tokenizer: str,
     device: str,
     beam_size: int = 5,
 ) -> dict:
@@ -57,7 +42,7 @@ def eval_checkpoint(
         eval_tsv=test_tsv,
         output_dir=str(out_dir),
         device=device,
-        tokenizer_name=tokenizer,
+        tokenizer_name=None,  # auto-detect from checkpoint
         beam_size=beam_size,
     )
 
@@ -66,7 +51,6 @@ def eval_with_pi(
     ckpt_path: str,
     run_name: str,
     test_tsv: str,
-    tokenizer: str,
     device: str,
     scales: list[float],
     beam_size: int = 5,
@@ -85,7 +69,7 @@ def eval_with_pi(
         apply_position_interpolation(model, scale)
         print(f"[eval] Applied PI scale={scale} to {run_name}")
 
-        # Save a temporary checkpoint with PI applied
+        # Save temp checkpoint with PI applied
         temp_ckpt = paths.CHECKPOINT_DIR / f"_temp_{pi_run_name}.pt"
         torch.save({
             "model_state_dict": model.state_dict(),
@@ -97,59 +81,79 @@ def eval_with_pi(
             eval_tsv=test_tsv,
             output_dir=str(out_dir),
             device=device,
-            tokenizer_name=tokenizer,
+            tokenizer_name=None,
             beam_size=beam_size,
         )
         result["pi_scale"] = scale
         results.append(result)
         temp_ckpt.unlink(missing_ok=True)
 
+        del model
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
     return results
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run all evaluations")
-    parser.add_argument("--lang", choices=["de", "hi", "bn"], default="de")
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--pi-scales", nargs="+", type=float, default=[1.5, 2.0, 3.0])
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args(argv)
 
-    ds = DATASETS[args.lang]
-    test_tsv = ds["test_tsv"]
-    tokenizer = ds["tokenizer"]
-
-    if test_tsv and not Path(test_tsv).exists():
-        print(f"[eval] Warning: test TSV not found at {test_tsv}")
-        return
-
-    # Find all checkpoints for this language
     ckpt_dir = paths.CHECKPOINT_DIR
-    all_checkpoints = []
+    device = args.device
+
+    # Find all checkpoints
+    all_ckpts = []
     for subdir in ckpt_dir.iterdir():
         if not subdir.is_dir():
             continue
-        if f"_{args.lang}" in subdir.name or subdir.name.endswith(f"_{args.lang}"):
-            best_pt = subdir / "best.pt"
-            if best_pt.exists():
-                all_checkpoints.append((subdir.name, str(best_pt)))
+        best_pt = subdir / "best.pt"
+        if best_pt.exists():
+            all_ckpts.append((subdir.name, str(best_pt)))
 
-    print(f"[eval] Found {len(all_checkpoints)} checkpoints for lang={args.lang}")
+    print(f"[eval] Found {len(all_ckpts)} checkpoints")
 
-    for run_name, ckpt_path in sorted(all_checkpoints):
+    # Language-specific test data
+    def get_test_data(run_name: str) -> str | None:
+        if "_de" in run_name:
+            return "raw_data/wmt14/test.tsv"
+        elif "_hi" in run_name:
+            return "processed_data/test_3k.tsv"
+        elif "_bn" in run_name:
+            return "processed_data_bn/test_3k.tsv"
+        return None
+
+    for run_name, ckpt_path in sorted(all_ckpts):
+        if run_name.startswith("_temp_") or run_name.startswith("_test"):
+            continue
+
+        test_tsv = get_test_data(run_name)
+        if test_tsv is None:
+            print(f"[eval] Skipping {run_name}: unknown language")
+            continue
+        if not Path(test_tsv).exists():
+            print(f"[eval] Skipping {run_name}: test data not found at {test_tsv}")
+            continue
+
         print(f"\n[eval] {'='*60}")
         print(f"[eval] {run_name}")
         print(f"[eval] {'='*60}")
 
         # Standard eval
-        eval_checkpoint(ckpt_path, run_name, test_tsv, tokenizer, args.device, args.beam_size)
+        eval_checkpoint(ckpt_path, f"{run_name}_eval", test_tsv, device, args.beam_size)
 
-        # PI eval for RoPE checkpoints
-        if "rope" in run_name and "pi" not in run_name and "carope" not in run_name:
+        # PI eval for standard RoPE checkpoints only (not AdaptiveRoPE or ablations)
+        ckpt_data = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        pe_type = str(ckpt_data.get("config", {}).get("pe_type", ""))
+        is_rope_only = pe_type == "rope"
+        if is_rope_only and "pi" not in run_name and "carope" not in run_name and "ls" not in run_name:
             print(f"[eval] Running PI variants for {run_name}...")
-            eval_with_pi(ckpt_path, run_name, test_tsv, tokenizer, args.device, args.pi_scales, args.beam_size)
+            eval_with_pi(ckpt_path, f"{run_name}_eval", test_tsv, device, args.pi_scales, args.beam_size)
 
-    print(f"\n[eval] All evaluations complete for lang={args.lang}")
+    print(f"\n[eval] All evaluations complete.")
 
 
 if __name__ == "__main__":

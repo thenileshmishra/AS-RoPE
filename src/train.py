@@ -200,6 +200,8 @@ def train(cfg: TrainConfig) -> dict:
     run_config["bos_id"] = bos_id
     run_config["eos_id"] = eos_id
     run_config["n_params"] = n_params
+    # Store tokenizer name from dataset meta if available
+    run_config["tokenizer"] = meta.get("tokenizer", "Helsinki-NLP/opus-mt-en-de")
     (logs_dir / "run_config.json").write_text(json.dumps(run_config, indent=2))
 
     metrics_path = logs_dir / "metrics.jsonl"

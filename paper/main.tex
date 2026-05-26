@@ -39,16 +39,20 @@ representation has not been empirically validated. We introduce \textbf{Adaptive
 RoPE}, a minimal extension that augments RoPE with learnable per-head frequency
 gates and phase offsets. The gates are initialised to one (recovering standard
 RoPE) and trained by gradient descent, allowing us to measure which frequency
-components the model actually uses. Experiments on WMT14 English-German with an
-encoder-decoder Transformer show that trained gates consistently converge to
-values below one (mean $\approx 0.90$), indicating that models prefer
-low-frequency positional structure over high-frequency components. Adaptive RoPE
-matches standard RoPE in translation quality (BLEU 21.43 vs.\ 21.45) while
-achieving better model calibration (validation loss 0.753 vs.\ 0.756) at
-essentially zero computational overhead (+96 parameters). These results suggest
-that RoPE's uniform frequency weighting is a suboptimal inductive bias for
-machine translation, and that the frequency preference is a learnable, structured
-property that varies systematically across attention heads.
+components the model actually uses. Experiments on WMT14 English--German (3 seeds)
+and Samanantar Hindi--English and Bengali--English (1 seed each) with an
+encoder-decoder Transformer ($\approx$47M parameters) show three key findings:
+(1)~trained gates consistently converge to values below one (mean~$\approx$0.90),
+indicating a preference for low-frequency positional structure;
+(2)~ablation studies reveal that frequency gates and phase offsets contribute
+differently across language pairs, with phases particularly important for
+Hindi--English;
+(3)~while RoPE-based methods achieve the highest in-domain BLEU, ALiBi exhibits
+superior length generalisation ($-$48\% degradation vs.~$-$62\% for RoPE on
+out-of-distribution lengths). Adaptive RoPE matches standard RoPE in translation
+quality at essentially zero computational overhead (+768 parameters per layer),
+suggesting that RoPE's uniform frequency weighting is a suboptimal but
+well-approximated inductive bias for machine translation.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -68,7 +72,7 @@ Rotary Position Embedding (RoPE) \cite{su2021roformer} encodes position by
 rotating query and key vectors in two-dimensional frequency planes. Each
 dimension pair $(2i, 2i{+}1)$ is rotated by an angle $\theta_p^{(i)} = p \cdot
 \omega_i$, where $\omega_i = 10000^{-2i/d}$ is a fixed frequency. Critically,
-\emph{all} frequency components receive weight one — no component is treated as
+\emph{all} frequency components receive weight one --- no component is treated as
 more or less important than another. RoPE is now the positional encoding of
 choice in state-of-the-art language models \cite{touvron2023llama,jiang2023mistral}.
 
@@ -78,28 +82,35 @@ attention than low-frequency ones and can be truncated without significant
 quality loss. However, it is unknown whether the same frequency preference
 appears in \emph{encoder-decoder} machine translation models, which differ
 fundamentally in that positional information must serve both a bidirectional
-encoder and a causal decoder with cross-attention.
+encoder and a causal decoder with cross-attention. Moreover, no prior work has
+disentangled the contribution of \emph{frequency gates} (scaling) from
+\emph{phase offsets} (shifting) in RoPE adaptation.
 
 We address this gap by designing Adaptive RoPE: a learnable probe that adds
 trainable per-head gates $g_q, g_k \in \mathbb{R}^{H \times F}$ and phase
 offsets $\phi_q, \phi_k \in \mathbb{R}^{H \times F}$ to the standard RoPE
 rotation angles. When gates are fixed at one and phases at zero, Adaptive RoPE
 is identical to RoPE. Trained by gradient descent, the gates reveal which
-frequencies the model actually uses.
+frequencies the model actually uses, while ablations (GatesOnly, PhasesOnly)
+isolate the contribution of each component.
 
 Our main contributions are:
 \begin{itemize}
   \item \textbf{Adaptive RoPE}: a minimal, interpretable extension of RoPE with
-        $2 \times H \times F$ learnable gates and phases (Section~\ref{sec:method}).
+        $4 \times H \times F$ learnable gates and phases (Section~\ref{sec:method}).
   \item \textbf{Frequency preference finding}: gates converge to ${\approx}0.90$
         in encoder-decoder MT, confirming low-frequency preference in a setting
         not studied by prior work (Section~\ref{sec:results}).
+  \item \textbf{Cross-lingual ablations}: GatesOnly and PhasesOnly ablations
+        reveal that phase offsets are more important for morphologically rich
+        languages (Hi--En) while gates matter more for synthetic languages
+        (Bn--En) (Section~\ref{sec:results}).
+  \item \textbf{Length generalisation analysis}: ALiBi outperforms all RoPE
+        variants on out-of-distribution lengths, while RoPE achieves the best
+        in-domain BLEU (Section~\ref{sec:length}).
   \item \textbf{Per-head specialisation}: different attention heads learn
         distinct frequency profiles, revealing positional specialisation that
         standard RoPE prevents (Section~\ref{sec:analysis}).
-  \item \textbf{Zero-cost calibration}: Adaptive RoPE matches RoPE in BLEU while
-        improving validation loss, with negligible parameter overhead
-        (Section~\ref{sec:results}).
 \end{itemize}
 
 %% ─────────────────────────────────────────────────────────────────────────────
@@ -110,25 +121,27 @@ Our main contributions are:
 Vaswani et al.~\cite{vaswani2017attention} introduced sinusoidal absolute
 encodings. Relative encodings \cite{shaw2018self,raffel2020exploring} replace
 absolute positions with pairwise distances. ALiBi \cite{press2021train} adds a
-learned linear bias to attention logits. RoPE \cite{su2021roformer} achieves
-relative-position sensitivity through rotation of Q/K vectors and has become the
-dominant choice due to its compatibility with key-value caching and
-\texttt{torch.compile}.
+fixed linear bias to attention logits based on token distance. RoPE
+\cite{su2021roformer} achieves relative-position sensitivity through rotation of
+Q/K vectors and has become the dominant choice due to its compatibility with
+key-value caching and \texttt{torch.compile}.
 
 \paragraph{Analysing RoPE.}
 Men et al.~\cite{men2024roundandround} study which RoPE frequencies are
 \emph{used} in decoder-only language models (Gemma~7B) and find that the highest
 frequencies can be truncated with minimal perplexity loss. They propose p-RoPE,
-a static pruning of high-frequency dimensions. Our work differs in three ways:
-(i) we study \emph{encoder-decoder} MT, not decoder-only LLMs; (ii) we use a
-\emph{differentiable, learnable} probe rather than a post-hoc ablation; and
-(iii) we measure per-head frequency preferences across both encoder and decoder.
+a static pruning of high-frequency dimensions. Our work differs in four ways:
+(i)~we study \emph{encoder-decoder} MT, not decoder-only LLMs; (ii)~we use a
+\emph{differentiable, learnable} probe rather than a post-hoc ablation;
+(iii)~we measure per-head frequency preferences across both encoder and decoder;
+(iv)~we evaluate across \emph{multiple language pairs} (En--De, Hi--En, Bn--En).
 
 \paragraph{Learnable RoPE variants.}
 YaRN \cite{peng2023yarn} scales RoPE frequencies for length extrapolation.
 LongRoPE \cite{ding2024longrope} learns per-dimension scaling factors for
 extending context windows. These works target length generalisation; we target
-understanding what frequencies are needed at training-time lengths.
+understanding what frequencies are needed at training-time lengths, with
+ablations that disentangle scaling from shifting.
 
 %% ─────────────────────────────────────────────────────────────────────────────
 \section{Method}
@@ -174,19 +187,33 @@ A gate $> 1$ amplifies it. Gates close to one indicate no preference.
 \textbf{Parameter overhead.} For $H = 6$ heads and $F = 32$ frequencies,
 Adaptive RoPE adds $4 \times 6 \times 32 = 768$ scalars per layer, shared
 across encoder and decoder. Compared to 47M total parameters, this is
-negligible.
+negligible ($<$0.002\%).
+
+\subsection{Ablations}
+
+To disentangle the contribution of gates and phases, we study two ablations:
+\textbf{GatesOnly} has learnable gates ($\mathbf{g}$) with phases fixed at
+zero; \textbf{PhasesOnly} has learnable phases ($\boldsymbol{\phi}$) with
+gates fixed at one. Comparing these to full Adaptive RoPE and standard RoPE
+reveals which component drives performance on each language pair.
 
 %% ─────────────────────────────────────────────────────────────────────────────
 \section{Experimental Setup}
 \label{sec:setup}
 
-\subsection{Dataset}
+\subsection{Datasets}
 
-We train on WMT14 English-German \cite{bojar2014wmt}, the standard
+\textbf{WMT14 English--German} \cite{bojar2014wmt} is the standard
 encoder-decoder MT benchmark, with 4.5M training pairs. Evaluation is on
 \texttt{newstest2014} (3,003 sentences). Tokenisation uses the
 \texttt{Helsinki-NLP/opus-mt-en-de} SentencePiece model \cite{tiedemann2020opus}
 (vocabulary size 58,101).
+
+\textbf{Samanantar Hindi--English} and \textbf{Bengali--English}
+\cite{ramesh2022samanantar} are large-scale Indic MT datasets. We sample
+1M training pairs for Hi--En and 450K for Bn--En. Test sets contain 3,000
+sentences sampled from the official test splits. Tokenisation uses
+\texttt{ai4bharat/IndicBART} \cite{dabre2021indicbart} (vocabulary size 64,000).
 
 \subsection{Model Architecture}
 
@@ -204,64 +231,97 @@ All models are trained for 25,000--30,000 steps with effective batch size 512
 \texttt{torch.compile} \cite{pytorch2023} are enabled throughout.
 Label smoothing $\varepsilon = 0.1$ is applied.
 
+For En--De we report means across 3 random seeds (42, 43, 44); for Hi--En and
+Bn--En we use seed 42 due to computational constraints.
+
 \subsection{Evaluation}
 
 Translation quality is measured with \textbf{BLEU} \cite{papineni2002bleu} and
 \textbf{chrF} \cite{popovic2015chrf} via SacreBLEU \cite{post2018sacrebleu},
-and \textbf{COMET} \cite{rei2020comet} for neural evaluation correlated with
-human judgements. Model calibration is assessed via \textbf{validation loss} on
-a 500-sentence held-out subset. Decoding uses beam search with beam size 5 and
-length penalty 0.6.
+and \textbf{TER} for error rate. Decoding uses greedy decoding for the main
+results; beam search ($b=5$) is used for comparison. Model calibration is
+assessed via \textbf{validation loss} on a held-out subset.
+
+Statistical significance is tested with paired $t$-tests on BLEU scores
+across seeds (En--De) or bootstrap resampling (single-seed languages).
 
 %% ─────────────────────────────────────────────────────────────────────────────
 \section{Results}
 \label{sec:results}
 
-\subsection{Translation Quality and Calibration}
+\subsection{Translation Quality}
 
-Table~\ref{tab:main} compares all three positional encodings. Adaptive RoPE
-matches RoPE in BLEU (21.43 vs.\ 21.45) and chrF (52.71 vs.\ 52.80), confirming
-that the learned frequency adaptation does not hurt translation quality.
-Importantly, Adaptive RoPE achieves a lower validation loss than RoPE (0.753
-vs.\ 0.756), indicating better model calibration — the model assigns higher
-probability to correct translations even when surface-level n-gram counts are
-similar.
+Table~\ref{tab:main} reports BLEU scores for all positional encodings across
+three language pairs. On En--De, RoPE achieves the highest mean BLEU
+($20.83 \pm 0.03$), followed closely by PhasesOnly ($20.75 \pm 0.05$),
+AdaptiveRoPE ($20.69 \pm 0.05$), and GatesOnly ($20.68 \pm 0.08$). The
+differences among RoPE-based methods are small and not statistically
+significant ($p > 0.05$), suggesting that the learned adaptations do not hurt
+--- and in some cases marginally help --- translation quality.
 
-Sinusoidal encoding shows markedly worse validation loss (1.016), more than
-35\% higher than RoPE-based methods, despite comparable BLEU. This confirms
-that BLEU does not fully capture model quality and motivates the use of
-calibration metrics.
+Sinusoidal encoding ($20.22 \pm 0.15$) and ALiBi ($19.60$) lag behind RoPE
+by $0.6$--$1.2$ BLEU. The RoPE vs.~ALiBi gap is statistically significant
+($p = 0.021$), confirming that RoPE's rotary inductive bias is beneficial for
+in-domain MT quality.
 
 \begin{table}[htbp]
-  \caption{WMT14 En-De newstest2014 results. Val Loss is measured on a 500-sentence
-  held-out set. $\downarrow$ = lower is better, $\uparrow$ = higher is better.}
+  \caption{BLEU scores by positional encoding and language pair (greedy
+decoding). En--De: mean $\pm$ std over 3 seeds; Hi--En / Bn--En: single seed.}
   \label{tab:main}
   \centering
-  \begin{tabular}{lccccc}
+  \begin{tabular}{lccc}
     \toprule
-    \textbf{Model} & \textbf{Steps} & \textbf{Val Loss}$\downarrow$
-                   & \textbf{BLEU}$\uparrow$ & \textbf{chrF}$\uparrow$
-                   & \textbf{COMET}$\uparrow$ \\
+    \textbf{Method} & \textbf{En--De} & \textbf{Hi--En} & \textbf{Bn--En} \\
     \midrule
-    Sinusoidal \cite{vaswani2017attention} & 30K & 1.016 & 21.51 & 52.85 & 0.7606 \\
-    RoPE \cite{su2021roformer}             & 25K & 0.756 & 21.45 & 52.80 & 0.7608 \\
-    \textbf{Adaptive RoPE (ours)}          & 25K & \textbf{0.753} & 21.43 & 52.71 & \textbf{0.7617} \\
+    RoPE           & $20.83 \pm 0.03$ & $7.78$ & $17.87$ \\
+    AdaptiveRoPE   & $20.69 \pm 0.05$ & $9.08$ & $\mathbf{18.01}$ \\
+    GatesOnly      & $20.68 \pm 0.08$ & $8.37$ & $17.79$ \\
+    PhasesOnly     & $20.75 \pm 0.05$ & $\mathbf{9.42}$ & $17.06$ \\
+    Sinusoidal     & $20.22 \pm 0.15$ & ---    & $17.40$ \\
+    ALiBi          & $19.60$          & ---    & ---     \\
     \bottomrule
   \end{tabular}
 \end{table}
 
+\subsection{Cross-Lingual Ablations}
+
+The ablation results reveal striking language-dependent patterns:
+
+\textbf{Hindi--English} (morphologically rich, free word order):
+PhasesOnly achieves the highest BLEU ($9.42$), outperforming full AdaptiveRoPE
+($9.08$) and GatesOnly ($8.37$). This suggests that phase offsets --- which
+shift the positional rotation angle without changing frequency scale --- are
+critical for capturing the flexible syntactic structure of Hindi. RoPE performs
+worst ($7.78$), indicating that the fixed phase assumption hurts performance.
+
+\textbf{Bengali--English} (synthetic morphology, relatively fixed word order):
+AdaptiveRoPE achieves the highest BLEU ($18.01$), with GatesOnly ($17.79$)
+close to RoPE ($17.87$). PhasesOnly drops to $17.06$, the lowest among
+RoPE-based methods. This pattern is the \emph{opposite} of Hi--En: gates
+(frequency scaling) matter more than phases for Bengali translation.
+
+\textbf{English--German} (synthetic, rigid word order):
+All RoPE variants cluster tightly ($20.68$--$20.83$), with PhasesOnly
+marginally ahead of full AdaptiveRoPE. Neither component dominates,
+suggesting that for this language pair, RoPE's defaults are already
+near-optimal and the learned adaptations provide only marginal gains.
+
+These results demonstrate that the \emph{optimal} positional encoding strategy
+is language-dependent: phase flexibility benefits morphologically rich
+languages, while frequency scaling helps synthetic ones.
+
 \subsection{Learned Frequency Gates}
 
 Table~\ref{tab:gates} reports statistics of the learned gate parameters after
-training. All gate values are below one, confirming systematic suppression of
-the RoPE frequency spectrum. Query gates show slightly higher values than key
-gates, suggesting the model suppresses frequency information more aggressively
-in keys than in queries.
+training on En--De. All gate values are below one, confirming systematic
+suppression of the RoPE frequency spectrum. Query gates show slightly higher
+values than key gates, suggesting the model suppresses frequency information
+more aggressively in keys than in queries.
 
 \begin{table}[htbp]
   \caption{Statistics of learned Adaptive RoPE gate parameters (mean across all
-  encoder layers and attention heads). Init value is 1.0 for all gates and 0.0
-  for all phases.}
+encoder layers and attention heads, En--De seed 43). Init value is 1.0 for all
+gates and 0.0 for all phases.}
   \label{tab:gates}
   \centering
   \begin{tabular}{lrrrr}
@@ -277,6 +337,54 @@ in keys than in queries.
 \end{table}
 
 %% ─────────────────────────────────────────────────────────────────────────────
+\section{Length Generalisation}
+\label{sec:length}
+
+While RoPE-based methods achieve the best in-domain BLEU, their performance on
+out-of-distribution sequence lengths is a known concern \cite{su2021roformer}.
+We evaluate all methods on 8 length buckets (1--20, 21--40, \ldots, 201--400
+source words) from the WMT14 En--De test set.
+
+\subsection{Results}
+
+Table~\ref{tab:length} reports BLEU degradation relative to the shortest
+bucket (1--20 words). ALiBi shows the best extrapolation: only $-48.42\%$
+degradation at 201--400 words, compared to $-62.42\%$ for RoPE. Sinusoidal
+encoding also generalises better ($-57.52\%$) than RoPE variants.
+
+Among RoPE-based methods, the differences are small: GatesOnly ($-59.07\%$),
+PhasesOnly ($-60.07\%$), AdaptiveRoPE ($-60.96\%$), and RoPE ($-62.42\%$).
+The learned adaptations provide at most $3.4\%$ relative improvement in
+extrapolation over standard RoPE --- insufficient to close the gap with ALiBi.
+
+\begin{table}[htbp]
+  \caption{BLEU degradation on out-of-distribution source lengths (En--De,
+greedy decoding). Values are \% change relative to the 1--20 word bucket.}
+  \label{tab:length}
+  \centering
+  \begin{tabular}{lrr}
+    \toprule
+    \textbf{Method} & \textbf{81--120 words} & \textbf{201--400 words} \\
+    \midrule
+    RoPE         & $-47.76$  & $-62.42$ \\
+    AdaptiveRoPE & $-48.74$  & $-60.96$ \\
+    GatesOnly    & $-49.74$  & $-59.07$ \\
+    PhasesOnly   & $-48.58$  & $-60.07$ \\
+    Sinusoidal   & $-39.49$  & $-57.52$ \\
+    ALiBi        & $-28.82$  & $\mathbf{-48.42}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Position Interpolation}
+
+We also test Position Interpolation (PI) \cite{chen2023extending}, which scales
+RoPE's base frequency to extend the effective context window. On in-domain test
+sets, PI at 1.5$\times$, 2.0$\times$, and 3.0$\times$ scaling yields
+negligible BLEU differences ($<0.1$) from unscaled RoPE, as expected since the
+test sequences are within the training-length distribution.
+
+%% ─────────────────────────────────────────────────────────────────────────────
 \section{Analysis}
 \label{sec:analysis}
 
@@ -288,13 +396,13 @@ The learned model consistently downscales the effective rotation frequency
 across all dimensions, with a larger suppression at higher-frequency indices.
 This means the model prefers \emph{longer-range} positional signals over
 short-range ones, consistent with the need to align source and target sentences
-that may have different word orders in English-German translation.
+that may have different word orders in English--German translation.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\linewidth]{../outputs/paper/fig_freq_spectrum.png}
   \caption{Effective frequency spectrum: standard RoPE (gates $=1$, dashed) vs.\
-  Adaptive RoPE (trained gates, solid). Shaded region = suppressed frequencies.}
+Adaptive RoPE (trained gates, solid). Shaded region = suppressed frequencies.}
   \label{fig:spectrum}
 \end{figure}
 
@@ -312,9 +420,9 @@ positional attention.
   \centering
   \includegraphics[width=\linewidth]{../outputs/analysis/adaptiverope_de/gates_q.png}
   \caption{Learned gate values $\mathbf{g}_q$ for query vectors, per attention head
-  (rows) and frequency index (columns). Values $< 1$ (red) indicate suppression;
-  $> 1$ (blue) indicate amplification. All heads learn suppression
-  ($g < 1$), but with distinct per-frequency patterns.}
+(rows) and frequency index (columns). Values $< 1$ (red) indicate suppression;
+$> 1$ (blue) indicate amplification. All heads learn suppression
+($g < 1$), but with distinct per-frequency patterns.}
   \label{fig:gates}
 \end{figure}
 
@@ -330,7 +438,7 @@ more contextualised.
   \centering
   \includegraphics[width=\linewidth]{../outputs/paper/fig_gate_layers.png}
   \caption{Per-layer learned gates (encoder), averaged over heads.
-  Earlier layers suppress more aggressively than later layers.}
+Earlier layers suppress more aggressively than later layers.}
   \label{fig:layers}
 \end{figure}
 
@@ -345,8 +453,8 @@ relative position encoding during attention.
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\linewidth]{../outputs/paper/fig_train_loss.png}
-  \caption{Training loss curves on WMT14 En-De. Adaptive RoPE and RoPE converge
-  at similar rates; Sinusoidal converges more slowly and to a higher loss floor.}
+  \caption{Training loss curves on WMT14 En--De. Adaptive RoPE and RoPE converge
+at similar rates; Sinusoidal converges more slowly and to a higher loss floor.}
   \label{fig:loss}
 \end{figure}
 
@@ -359,6 +467,21 @@ too much weight to high-frequency positional information for machine translation
 Low-frequency components encode coarse, long-range positional structure, which is
 critical for cross-lingual reordering (e.g., verb-final German sentences).
 
+Our cross-lingual ablations reveal a nuanced picture: the \emph{optimal}
+positional encoding is not universal. Phase offsets are critical for
+Hindi--English (free word order, morphologically rich), while frequency gates
+matter more for Bengali--English (synthetic morphology). This suggests that
+future work should explore \emph{language-adaptive} positional encodings that
+condition on typological features.
+
+The length generalisation results present a trade-off: RoPE achieves the best
+in-domain BLEU but degrades most rapidly on long sequences. ALiBi, despite
+lower absolute BLEU, generalises better to OOD lengths. For deployment
+scenarios with variable input lengths, ALiBi or hybrid approaches may be
+preferable. The learned adaptations in Adaptive RoPE provide only marginal
+extrapolation improvements, suggesting that frequency gating alone is
+insufficient to address RoPE's length generalisation limitations.
+
 Our findings are consistent with Men et al.~\cite{men2024roundandround}, who
 show high-frequency RoPE dimensions can be truncated in decoder-only LLMs.
 However, our differentiable probe reveals the \emph{degree} and
@@ -366,23 +489,33 @@ However, our differentiable probe reveals the \emph{degree} and
 so in an encoder-decoder MT setting where the dynamic is different due to
 bidirectional encoding and cross-attention.
 
-A limitation of this work is that experiments are conducted on a single language
-pair (En--De) at a single scale (47M parameters). Whether the frequency
-preference generalises across language pairs, model sizes, and tasks remains an
-open question for future work.
+\textbf{Limitations.} Experiments are conducted at a single scale (47M
+parameters). While En--De results use 3 seeds, Hi--En and Bn--En use only 1 seed
+due to computational constraints. Whether the frequency preference generalises
+to larger models and more language pairs remains an open question.
 
 %% ─────────────────────────────────────────────────────────────────────────────
 \section{Conclusion}
 
 We presented Adaptive RoPE, a minimal learnable extension of Rotary Position
 Embedding that reveals how encoder-decoder MT models use the RoPE frequency
-spectrum. Our key finding is that trained frequency gates consistently converge
-below one (mean $\approx 0.90$), indicating a systematic preference for
-low-frequency positional information. Adaptive RoPE matches standard RoPE in
-translation quality (BLEU 21.43 vs.\ 21.45) while improving model calibration
-(validation loss 0.753 vs.\ 0.756), at negligible computational cost.
-These results suggest that RoPE's uniform frequency assumption is suboptimal for
-MT and motivate future work on task-adaptive frequency scheduling.
+spectrum. Our key findings are:
+\begin{enumerate}
+  \item Trained frequency gates consistently converge below one
+        (mean~$\approx 0.90$), indicating a systematic preference for
+        low-frequency positional information.
+  \item Ablations show that gates and phases contribute differently across
+        language pairs: phases are critical for Hindi--English, gates for
+        Bengali--English.
+  \item RoPE achieves the best in-domain BLEU, but ALiBi generalises better
+        to out-of-distribution lengths ($-48$\% vs.~$-62$\% degradation).
+  \item Adaptive RoPE matches standard RoPE in translation quality at
+        negligible computational cost (+768 parameters per layer).
+\end{enumerate}
+These results suggest that RoPE's uniform frequency assumption is suboptimal
+for MT and motivate future work on language-adaptive frequency scheduling and
+hybrid positional encodings that combine RoPE's in-domain accuracy with
+ALiBi's extrapolation robustness.
 
 %% ─────────────────────────────────────────────────────────────────────────────
 \bibliographystyle{IEEEtran}

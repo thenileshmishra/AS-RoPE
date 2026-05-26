@@ -33,7 +33,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--run-name", required=True,
                         help="Subdir under outputs/metrics for eval outputs")
     parser.add_argument("--eval-tsv", default=str(paths.RAW_WMT14_TEST))
-    parser.add_argument("--tokenizer", default="Helsinki-NLP/opus-mt-en-de")
+    parser.add_argument("--tokenizer", default=None,
+                        help="Tokenizer name (auto-detected from checkpoint if not provided)")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--beam-size", type=int, default=5,
