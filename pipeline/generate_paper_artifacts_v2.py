@@ -16,8 +16,8 @@ PAPER_CPS = {
     "gatesonly_de_s42", "gatesonly_de_s43", "gatesonly_de_s44", "gatesonly_hi_s42", "gatesonly_bn_s42",
     "phasesonly_de_s42", "phasesonly_de_s43", "phasesonly_de_s44", "phasesonly_hi_s42", "phasesonly_bn_s42",
     "rope_de_s43", "rope_de_s44", "rope_hi_s42", "rope_bn_s42",
-    "sinusoidal_de_correct", "sinusoidal_de_s43", "sinusoidal_de_s44", "sinusoidal_bn_s42",
-    "alibi_de_s42",
+    "sinusoidal_de_correct", "sinusoidal_de_s43", "sinusoidal_de_s44", "sinusoidal_hi", "sinusoidal_bn_s42",
+    "alibi_de_s42", "alibi_hi", "alibi_bn",
 }
 
 METRICS_DIR = "outputs/metrics"
@@ -32,8 +32,12 @@ for cp in PAPER_CPS:
     with open(path) as f:
         data = json.load(f)
     parts = cp.split("_")
-    lang = parts[-2] if parts[-1].startswith("s") else parts[-1]
-    method = "_".join(parts[:-2])
+    if len(parts) == 2:
+        # e.g. "sinusoidal_hi", "alibi_bn"
+        method, lang = parts[0], parts[1]
+    else:
+        lang = parts[-2] if parts[-1].startswith("s") else parts[-1]
+        method = "_".join(parts[:-2])
     o = data.get("overall", {})
     results[method][lang].append({
         "bleu": o.get("bleu", 0),
@@ -57,8 +61,12 @@ for cp in PAPER_CPS:
     with open(path) as f:
         d = json.load(f)
     parts = cp.split("_")
-    lang = parts[-2] if parts[-1].startswith("s") else parts[-1]
-    method = "_".join(parts[:-2])
+    if len(parts) == 2:
+        # e.g. "sinusoidal_hi", "alibi_bn"
+        method, lang = parts[0], parts[1]
+    else:
+        lang = parts[-2] if parts[-1].startswith("s") else parts[-1]
+        method = "_".join(parts[:-2])
     entropies = [layer["mean_entropy"] for layer in d.get("per_layer", [])]
     sinks = [layer["mean_sink_ratio"] for layer in d.get("per_layer", [])]
     attn_stats[method][lang].append({
@@ -258,10 +266,8 @@ lang_titles = ["En--De (3 seeds)", "Hi--En", "Bn--En"]
 
 for ax, lang, title in zip(axes, langs, lang_titles):
     methods = ["rope", "adaptiverope", "gatesonly", "phasesonly"]
-    if lang == "de":
+    if lang in ("de", "hi", "bn"):
         methods += ["sinusoidal", "alibi"]
-    elif lang == "bn":
-        methods += ["sinusoidal"]
     
     names = [method_names[m] for m in methods]
     means = []
