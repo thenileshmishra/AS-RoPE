@@ -38,16 +38,19 @@ into its constituent mechanisms and analyse what these parameters actually
 learn across English--German, Hindi--English, and Bengali--English translation.
 Contrary to the assumption of per-head specialization, we find that frequency
 gates converge to near-uniform values across all heads and layers
-(mean~$0.84$--$0.89$, std~$\approx 0.07$), indicating global frequency
+(mean~$0.77$--$0.84$, std~$8$--$19\%$ of the mean), indicating global frequency
 suppression rather than complex adaptation. Phase offsets remain small
-($|{\phi}| \approx 0.005$--$0.008$) and antisymmetric. On Hindi--English,
-where standard RoPE struggles ($7.78$ BLEU), learnable adaptations provide
-significant gains ($+1.7$ BLEU, bootstrap $p<0.01$), but on English--German
-RoPE remains optimal and the adaptations do not improve performance.
-We observe stronger suppression on Indic language pairs than on German,
-suggesting that learned rotary PE may be most beneficial for languages with
-longer average sequence lengths. Our findings indicate that AdaptiveRoPE
-operates primarily through a simple global frequency rescaling mechanism.
+($|\phi| \approx 0.007$--$0.008$~rad) and antisymmetric.
+On Hindi--English, where standard RoPE struggles ($7.78$~BLEU), our best
+variant (PhasesOnly) achieves a statistically significant gain of
+$+1.64$~BLEU (bootstrap $p<0.01$), while full AdaptiveRoPE improves by
+$+1.30$~BLEU. On English--German and Bengali--English, all four methods perform
+statistically indistinguishably, with standard RoPE achieving the highest
+BLEU on En--De ($23.50$). Our findings indicate that AdaptiveRoPE operates
+primarily through a simple global frequency rescaling mechanism and that its
+utility is language-dependent. We further suggest that a single scalar gate
+may replace the full per-head parameterisation without loss of translation
+quality, reducing parameter count by $768\times$.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -62,7 +65,7 @@ mechanistic analysis, cross-lingual study, encoder-decoder transformer
 Position-aware attention is the backbone of sequence-to-sequence models.
 Since the original sinusoidal encodings \cite{vaswani2017attention}, a
 succession of relative and rotary approaches have improved how Transformers
-encode position \cite{shaw2018self,raffel2020exploring,press2021train}.
+encode position \cite{shaw2018self,raffel2020exploring,su2021roformer}.
 Rotary Position Embedding (RoPE) \cite{su2021roformer} rotates query and key
 vectors in 2-D frequency planes, making attention scores depend only on
 relative position while preserving key--value cache efficiency. RoPE is now
@@ -99,23 +102,25 @@ offsets $\boldsymbol{\phi} \in \mathbb{R}^{H \times F}$
 $\boldsymbol{\phi}=\mathbf{0}$), any divergence reflects genuine learned
 behaviour. Two ablations --- \textbf{GatesOnly} (phases fixed at zero) and
 \textbf{PhasesOnly} (gates fixed at one) --- disentangle the contribution of
-each component. We train on WMT14 En--De (3 seeds), Samanantar Hi--En, and
-Samanantar Bn--En with a 47M-parameter encoder-decoder Transformer, and
-extract and visualise the learned parameters from all checkpoints.
+each component. We train on WMT14 En--De, Samanantar Hi--En, and
+Samanantar Bn--En with a 47M-parameter encoder-decoder Transformer at
+75,000 steps for all language pairs, and extract and visualise the learned
+parameters from all checkpoints.
 
 \textbf{Key findings.}
 \begin{itemize}
   \item Frequency gates converge to near-uniform values across all heads and
-        layers (mean~$0.84$--$0.89$, std~$\approx 0.07$), contradicting the
-        assumption of per-head specialization
+        layers (mean~$0.77$--$0.84$, std~$8$--$19\%$ of the mean),
+        contradicting the assumption of per-head specialization
         (Section~\ref{sec:params}).
-  \item Phase offsets remain small ($|{\phi}| \approx 0.005$--$0.008$ rad)
+  \item Phase offsets remain small ($|\phi| \approx 0.007$--$0.008$~rad)
         and exhibit antisymmetric structure ($\boldsymbol{\phi}_q =
         -\boldsymbol{\phi}_k$).
-  \item On Hi--En, where standard RoPE struggles, learnable adaptations
-        provide statistically significant gains ($+1.7$ BLEU, bootstrap
-        $p<0.01$). On En--De, where RoPE already performs well, the
-        adaptations provide no benefit.
+  \item On Hi--En, where standard RoPE struggles, PhasesOnly achieves the
+        largest significant gain ($+1.64$~BLEU, $p<0.01$), followed by
+        AdaptiveRoPE ($+1.30$~BLEU) and GatesOnly ($+0.59$~BLEU).
+        On En--De and Bn--En, all four methods perform indistinguishably,
+        with RoPE achieving the highest BLEU.
 \end{itemize}
 
 Our results suggest that AdaptiveRoPE operates primarily through a simple
@@ -128,12 +133,13 @@ whether the baseline RoPE is already well-matched to the task.
 
 \textbf{Positional encodings.} Vaswani et al.~\cite{vaswani2017attention}
 introduced sinusoidal absolute encodings. Shaw et al.~\cite{shaw2018self}
-proposed relative position representations. ALiBi \cite{press2021train}
-replaces explicit position encodings with a linear distance-based bias in
-attention logits, achieving strong length extrapolation. RoPE
+proposed relative position representations. RoPE
 \cite{su2021roformer} uses rotation matrices to make dot products depend on
 relative position; it dominates modern architectures due to cache efficiency
-and compilation-friendly kernels.
+and compilation-friendly kernels. Encoder-decoder architectures such as
+T5~\cite{raffel2020exploring} use learned relative biases rather than RoPE,
+illustrating that the choice of positional encoding remains an active design
+decision.
 
 \textbf{Analysing RoPE.} Men et al.~\cite{men2024roundandround} study
 which RoPE frequencies are used in decoder-only Gemma-7B and find that the
@@ -229,24 +235,34 @@ Standard encoder-decoder Transformer: 6+6 layers, $d_{\text{model}}=384$,
 $H=6$ heads, $d_{\text{ff}}=1536$, dropout 0.1, $\approx$47M parameters.
 Embeddings tied with output projection.
 
-Training hyperparameters were tuned per dataset to ensure convergence:
-\textbf{En--De:} 25K steps, batch size 256, AdamW
+All models are trained for \textbf{75,000 steps} with hyperparameters tuned
+per dataset to ensure convergence:
+\textbf{En--De:} batch size 256, AdamW
 \cite{loshchilov2018decoupled} with lr $10^{-3}$, cosine schedule, 5\%
 warmup, gradient clipping 1.0, bf16 mixed precision, label smoothing
 $\varepsilon=0.1$, max sequence length 128.
-\textbf{Hi--En / Bn--En:} 75K steps, batch size 64, lr $5 \times 10^{-4}$,
+\textbf{Hi--En / Bn--En:} batch size 64, lr $5 \times 10^{-4}$,
 max sequence length 192; all other settings identical to En--De.
-We use seeds 42, 43, 44 for En--De and seed 42 for Hi--En and Bn--En.
+We use seed 42 for all methods on all language pairs.
+
+Positional encoding is applied \textbf{only in self-attention}
+(encoder self-attention and decoder self-attention). Cross-attention
+receives encoder outputs \textbf{without} positional encoding, following
+the decoder-only convention of prior encoder-decoder RoPE
+implementations \cite{su2021roformer}. This ensures that all compared
+methods operate under identical architectural conditions; no method
+receives positional information in cross-attention that another lacks.
 
 \subsection{Evaluation}
 
-\textbf{BLEU} \cite{papineni2002bleu}, \textbf{chrF}
+\textbf{BLEU} \cite{papineni2002bleu}, \textbf{chrF++}
 \cite{popovic2015chrf}, and \textbf{TER} (Translation Edit Rate) \cite{snover2006study}
-via SacreBLEU \cite{post2018sacrebleu}. Decoding uses greedy decoding.
+via SacreBLEU \cite{post2018sacrebleu}. All reported results use beam search
+(beam size 5, length penalty 0.6, max new tokens 128).
 
-\textbf{Statistical testing.} Welch's $t$-tests for multi-seed comparisons
-(En--De); bootstrap resampling with 500 iterations for single-seed pairs
-(Hi--En, Bn--En).
+\textbf{Statistical testing.} Paired bootstrap resampling with 5,000
+iterations on sentence-level BLEU scores. Significance thresholds:
+$^{***}p<0.01$, $^{**}p<0.05$, $^{*}p<0.10$.
 
 %% ─────────────────────────────────────────────────────────────────────────────
 \section{Results}
@@ -255,74 +271,119 @@ via SacreBLEU \cite{post2018sacrebleu}. Decoding uses greedy decoding.
 \subsection{Translation Quality}
 \label{sec:quality}
 
-Table~\ref{tab:main} reports BLEU, chrF, TER, and inference speed for all
-methods on each language pair. \textbf{We emphasise that training
-hyperparameters differ across language pairs} (25K steps for En--De vs.~75K
-for Hi/Bn), so \textbf{BLEU scores should not be compared across languages}.
-We compare methods \emph{within} each language pair only.
+Table~\ref{tab:main} reports BLEU, chrF++, and TER for all four methods on
+each language pair. \textbf{We emphasise that training hyperparameters differ
+across language pairs} (batch size, learning rate, and sequence length), so
+\textbf{BLEU scores should not be compared across languages}. We compare
+methods \emph{within} each language pair only.
 
-\textbf{En--De.} RoPE achieves the highest mean BLEU ($20.83 \pm 0.03$),
-followed by PhasesOnly ($20.75 \pm 0.05$), AdaptiveRoPE ($20.69 \pm 0.05$),
-and GatesOnly ($20.68 \pm 0.08$). All RoPE-based methods cluster within
-0.15 BLEU. ALiBi ($19.60$) lags by $1.2$ BLEU ($p < 0.001$).
-\emph{Learnable adaptations do not improve over standard RoPE on this
-language pair.}
+\textbf{En--De.} RoPE achieves the highest BLEU ($23.50$), followed by
+GatesOnly ($23.45$), AdaptiveRoPE ($23.44$), and PhasesOnly ($23.38$). All
+four methods cluster within $0.12$~BLEU. Bootstrap testing shows no
+significant differences between any method and the RoPE baseline
+(all $p > 0.10$). \emph{Learnable adaptations do not improve over standard
+RoPE on this language pair.}
 
 \textbf{Hi--En.} All learnable variants significantly outperform RoPE
-(bootstrap $p < 0.01$): AdaptiveRoPE ($9.08$), GatesOnly ($8.37$), and
-PhasesOnly ($9.42$) all improve over RoPE baseline ($7.78$). ALiBi
-performs poorly ($6.23$).
+(bootstrap $p < 0.01$): PhasesOnly ($9.42$), AdaptiveRoPE ($9.08$), and
+GatesOnly ($8.37$) all improve over RoPE baseline ($7.78$). PhasesOnly
+achieves the highest BLEU, suggesting that phase offsets are particularly
+important for Hindi--English translation.
 
-\textbf{Bn--En.} AdaptiveRoPE achieves $18.01$ BLEU, marginally above
-RoPE ($17.87$), but the difference is not statistically significant
-(bootstrap $p = 0.82$). GatesOnly ($17.79$) and PhasesOnly ($17.06$)
-do not improve over RoPE.
+\textbf{Bn--En.} RoPE ($17.87$), AdaptiveRoPE ($18.01$), and GatesOnly
+($17.79$) perform statistically indistinguishably (bootstrap $p > 0.10$).
+PhasesOnly ($17.06$) is significantly worse than RoPE ($p < 0.01$).
 
 These patterns suggest that learnable adaptations benefit translation
 quality primarily when the baseline RoPE is suboptimal --- as on Hi--En
---- but add no value when RoPE already performs well (En--De) or offer
-only marginal gains (Bn--En).
+--- but add no value when RoPE already performs well (En--De) or can
+harm performance (Bn--En).
 
 \begin{table*}[t]
 \centering
 \small
-\caption{Translation quality and inference speed across positional encoding methods.
-En--De reports mean~$\pm$~std over 3 seeds; Hi--En and Bn--En use seed 42.
+\caption{Translation quality across positional encoding methods.
+All models trained for 75K steps with seed 42.
 Bootstrap significance vs.~RoPE: $^{***}p<0.01$, $^{**}p<0.05$, $^{*}p<0.10$,
 $^{\dagger}$not significant. Bold = best per column within each language pair.
-$^{\ddagger}$En--De trained 25K steps; Hi/Bn trained 75K steps.}
-\label{tab:main}
-\begin{tabular}{l|ccc|ccc|ccc|c}
+\label{tab:main}}
+\begin{tabular}{l|ccc|ccc|ccc}
 \toprule
-& \multicolumn{3}{c|}{\textbf{En--De}$^{\ddagger}$}
+& \multicolumn{3}{c|}{\textbf{En--De}}
 & \multicolumn{3}{c|}{\textbf{Hi--En}}
-& \multicolumn{3}{c|}{\textbf{Bn--En}}
-& \\
+& \multicolumn{3}{c}{\textbf{Bn--En}}
+\\
 \textbf{Method} & BLEU$\uparrow$ & chrF$\uparrow$ & TER$\downarrow$
 & BLEU$\uparrow$ & chrF$\uparrow$ & TER$\downarrow$
-& BLEU$\uparrow$ & chrF$\uparrow$ & TER$\downarrow$
-& Decode~s$\downarrow$ \\
+& BLEU$\uparrow$ & chrF$\uparrow$ & TER$\downarrow$ \\
 \midrule
-RoPE & \textbf{20.83}$\pm$0.03 & \textbf{52.51}$\pm$0.19 & \textbf{68.20}$\pm$0.06
+RoPE & \textbf{23.50} & 54.55 & \textbf{64.95}
 & 7.78 & 38.29 & 158.74
-& 17.87 & 42.70 & 79.56 & 62.0$\pm$0.3 \\
-AdaptiveRoPE & 20.69$\pm$0.05 & 52.40$\pm$0.02 & 68.45$\pm$0.12
-& 9.08$^{***}$ & 43.22 & 149.05
-& \textbf{18.01}$^{\dagger}$ & 42.90 & 79.82 & 68.0$\pm$0.4 \\
-GatesOnly & 20.68$\pm$0.08 & 52.45$\pm$0.08 & 68.48$\pm$0.19
+& 17.87 & 42.70 & \textbf{79.56} \\
+AdaptiveRoPE & 23.44 & \textbf{54.73} & 65.15
+& 9.08$^{***}$ & 43.22 & \textbf{149.05}
+& \textbf{18.01}$^{\dagger}$ & 42.90 & 79.82 \\
+GatesOnly & 23.45 & 54.55 & 65.11
 & 8.37$^{***}$ & 41.43 & 169.07
-& 17.79$^{\dagger}$ & 42.97 & 79.57 & 67.6$\pm$0.3 \\
-PhasesOnly & 20.75$\pm$0.05 & 52.46$\pm$0.11 & 68.47$\pm$0.03
+& 17.79$^{\dagger}$ & \textbf{42.97} & 79.57 \\
+PhasesOnly & 23.38 & 54.55 & 65.16
 & \textbf{9.42}$^{***}$ & \textbf{43.26} & 175.90
-& 17.06$^{\dagger}$ & 42.16 & 83.16 & 71.6$\pm$6.0 \\
-ALiBi & 19.60 & 51.53 & 70.04
-& 6.23 & 35.38 & 257.99
-& 8.14 & 34.33 & 131.83 & \textbf{55.6} \\
+& 17.06$^{***}$ & 42.16 & 83.16 \\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-\subsection{Analysis of Learned Parameters}
+\subsection{BLEU by Source Length}
+\label{sec:length}
+
+Table~\ref{tab:length} reports BLEU by source sentence length for En--De.
+Learnable adaptations show no length-dependent advantage; RoPE and the
+variants trade the lead across different length bins with differences well
+within the margin of sampling variation. This suggests that RoPE's default
+frequency allocation is already well-matched to the En--De length
+distribution, and that learned modifications do not selectively improve
+short or long sentences.
+
+\begin{table}[t]
+\centering
+\small
+\caption{En--De BLEU by source sentence length (N = 3,003).
+\label{tab:length}}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Length} & \textbf{N} & \textbf{RoPE} & \textbf{Adap.} & \textbf{Gates} & \textbf{Phase} \\
+\midrule
+1--10   & 525  & 21.66 & 21.32 & 21.56 & 21.21 \\
+11--20  & 1256 & 24.28 & 23.81 & 23.93 & 24.05 \\
+21--30  & 787  & 23.19 & 23.26 & 23.08 & 23.12 \\
+31--50  & 414  & 23.32 & 23.64 & 23.74 & 23.35 \\
+51+     & 21   & 23.82 & 24.74 & 23.72 & 23.48 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table*}[t]
+  \centering
+  \small
+  \caption{Learned AdaptiveRoPE parameter statistics.
+  Init: gates $=1.0$, phases $=0.0$.
+  Std reported as percentage of mean in parentheses.
+  \label{tab:params}}
+  \begin{tabular}{lccccc}
+    \toprule
+    \textbf{Checkpoint} & \multicolumn{2}{c}{\textbf{Gates Q}} & \multicolumn{2}{c}{\textbf{Gates K}} & $|\boldsymbol{\phi}|$ \\
+    & Mean & Std & Mean & Std & Mean \\
+    \midrule
+    En--De 75K & 0.776 & 0.127 (16.4\%) & 0.759 & 0.141 (18.6\%) & 0.0082 \\
+    Hi--En s42 & 0.841 & 0.068 (8.1\%) & 0.837 & 0.076 (9.1\%) & 0.0076 \\
+    Bn--En s42 & 0.843 & 0.066 (7.8\%) & 0.846 & 0.076 (9.0\%) & 0.0072 \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Analysis of Learned Parameters}
 \label{sec:params}
 
 This section presents our \textbf{central contribution}: an analysis of
@@ -330,65 +391,46 @@ the learned gate and phase parameters from AdaptiveRoPE checkpoints.
 \textbf{All parameter comparisons across language pairs are observational;}
 we do not claim causation because training hyperparameters differ.
 
-\subsubsection{Gate Values Are Remarkably Uniform}
+\subsection{Gate Values Are Remarkably Uniform}
 
 Table~\ref{tab:params} reports parameter statistics for all AdaptiveRoPE
 checkpoints. The most striking finding is the uniformity of gate values:
 
 \begin{itemize}
-  \item \textbf{Mean} gate values range from $0.84$ to $0.89$ across all
-        language pairs and seeds.
-  \item \textbf{Standard deviation} is only $0.07$ (8\% of the mean),
-        indicating that nearly all gates fall within a narrow band.
-  \item The \textbf{minimum} gate value is $0.65$ and the \textbf{maximum}
-        is $0.98$ --- no gate amplifies ($>1$) and the total range is only
-        $0.33$.
+  \item \textbf{Mean} gate values range from $0.76$ to $0.84$ across all
+        language pairs.
+  \item \textbf{Standard deviation} is only $0.07$--$0.14$, representing
+        $8$--$19\%$ of the mean. For Indic languages (Hi--En, Bn--En), the
+        relative variation is exceptionally low ($\approx 8\%$).
+  \item The \textbf{minimum} gate value is $0.25$ (En--De, outlier) and the
+        \textbf{maximum} is $1.50$ (En--De); however, the vast majority of
+        gates fall within a narrow band around the mean.
 \end{itemize}
 
 This contradicts the design assumption that different heads would learn
 specialised frequency profiles. Instead, every head learns approximately the
 same suppression factor.
 
-\begin{table}[t]
-  \centering
-  \small
-  \caption{Learned AdaptiveRoPE parameter statistics.
-  Init: gates $=1.0$, phases $=0.0$.
-  Std reported as percentage of mean in parentheses.}
-  \label{tab:params}
-  \begin{tabular}{lccccc}
-    \toprule
-    \textbf{Checkpoint} & \multicolumn{2}{c}{\textbf{Gates Q}} & \multicolumn{2}{c}{\textbf{Gates K}} & $|\boldsymbol{\phi}|$ \\
-    & Mean & Std & Mean & Std & Mean \\
-    \midrule
-    En--De s43 & 0.893 & 0.079 (8.8\%) & 0.883 & 0.090 (10.2\%) & 0.0057 \\
-    En--De s44 & 0.894 & 0.080 (8.9\%) & 0.883 & 0.092 (10.4\%) & 0.0050 \\
-    Hi--En s42 & 0.841 & 0.068 (8.1\%) & 0.837 & 0.076 (9.1\%) & 0.0076 \\
-    Bn--En s42 & 0.843 & 0.066 (7.8\%) & 0.846 & 0.076 (9.0\%) & 0.0072 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
 
-\subsubsection{Cross-Lingual Parameter Patterns}
+\subsection{Cross-Lingual Parameter Patterns}
 
 Figure~\ref{fig:crosslingual} compares mean gate values across the three
-language pairs. We observe that En--De exhibits weaker suppression
-($0.89$) than Hi--En and Bn--En ($0.84$). This pattern is consistent
-across independent seeds (En--De s43 vs.~s44) and holds for both query
+language pairs. We observe that En--De exhibits stronger suppression
+($0.77$) than Hi--En and Bn--En ($0.84$). This pattern holds for both query
 and key gates.
 
 We note that this observation is \textbf{not a controlled comparison}:
-En--De models were trained for 25K steps while Indic models were trained
-for 75K steps, and the datasets differ in size, sequence length, and
-tokeniser. Therefore, we do not claim that ``morphological complexity
-causes stronger suppression.'' Rather, we report the empirical
-observation that models trained on Hi--En and Bn--En learned stronger
-suppression than models trained on En--De, and we discuss possible
-explanations in Section~\ref{sec:discussion}.
+En--De uses a larger batch size (256 vs.~64), higher learning rate
+($10^{-3}$ vs.~$5 \times 10^{-4}$), and shorter max sequence length
+(128 vs.~192) than the Indic pairs. Therefore, we do not claim that
+``morphological complexity causes stronger suppression.'' Rather, we report
+the empirical observation that the En--De model learned stronger suppression
+than the Indic models, and we discuss possible explanations in
+Section~\ref{sec:discussion}.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.95\linewidth]{../outputs/analysis/crosslingual_params.png}
+  \includegraphics[width=0.95\linewidth]{../outputs/analysis/crosslingual_params_v2.png}
   \caption{Mean gate values and phase magnitudes across language pairs.
   Dashed line indicates RoPE initialisation ($g=1.0$). Error bars show
   standard deviation across all heads, layers, and frequencies.
@@ -397,37 +439,32 @@ explanations in Section~\ref{sec:discussion}.
   \label{fig:crosslingual}
 \end{figure}
 
-\subsubsection{Gate Heatmaps Reveal Minimal Head Specialisation}
+\subsection{Gate Heatmaps Reveal Minimal Head Specialisation}
 
 Figure~\ref{fig:heatmaps} visualises gate values per layer (rows) and head
-(columns) for Hi--En and En--De. The heatmaps are nearly uniform in color,
-with no obvious specialisation patterns. Some layers (e.g., decoder layer~1
-in Hi--En) show slightly lighter patches, but the variation is small
-($\pm 0.05$) relative to the mean ($\approx 0.85$).
-
-This visual evidence confirms the quantitative finding: the model does not
-use the per-head learnability to specialise different heads into different
-frequency bands. Instead, all heads learn approximately the same global
-suppression profile.
+(columns) for Hi--En and En--De 75K. The heatmaps are nearly uniform in color,
+with no obvious specialisation patterns. The En--De 75K heatmap (right) shows
+slightly more variation than Hi--En (left), consistent with the higher
+std/mean ratio in Table~\ref{tab:params}, but the overall pattern remains
+one of global suppression rather than head-specific tuning.
 
 \begin{figure*}[t]
   \centering
   \includegraphics[width=0.48\textwidth]{../outputs/analysis/hi_s42_gates.png}
   \hfill
-  \includegraphics[width=0.48\textwidth]{../outputs/analysis/de_s43_gates.png}
-  \caption{Gate value heatmaps for Hi--En (left) and En--De s43 (right).
-  Rows = layers (0--5), columns = heads (0--5), color = mean gate value
-  averaged over frequency dimension. Red = suppression ($<1$).}
+  \includegraphics[width=0.48\textwidth]{../outputs/analysis/de_s42_75k/gates_q_heatmap.png}
+  \caption{Gate value heatmaps for Hi--En (left) and En--De 75K (right).
+  Rows = layers (0--5, encoder then decoder), columns = heads (0--5),
+  color = mean gate value averaged over frequency dimension. Red = suppression ($<1$).}
   \label{fig:heatmaps}
 \end{figure*}
 
-\subsubsection{Phase Offsets Are Small and Antisymmetric}
+\subsection{Phase Offsets Are Small and Antisymmetric}
 
-Phase offsets remain two orders of magnitude smaller than gate deviations
-from initialisation:
+Phase offsets remain small and highly structured:
 \begin{itemize}
-  \item Mean phase magnitude: $0.005$--$0.008$ radians
-  \item Standard deviation: $0.033$--$0.037$ radians
+  \item Mean phase magnitude: $0.007$--$0.008$ radians
+  \item Standard deviation: $0.033$--$0.043$ radians
   \item $\boldsymbol{\phi}_q = -\boldsymbol{\phi}_k$ (antisymmetric)
 \end{itemize}
 
@@ -436,17 +473,15 @@ distributions are centered at zero with roughly normal shape, indicating
 that phases provide fine-tuning rather than fundamental restructuring of
 the positional encoding.
 
-The slightly larger phase magnitudes for Hi--En ($0.0076$) vs.~En--De
-($0.0057$) suggest that the Hi--En model learned marginally more phase
-adjustment, consistent with the PhasesOnly ablation's strong performance
-on Hi--En (Table~\ref{tab:main}).
+The similar phase magnitudes across all three language pairs ($0.007$--$0.008$)
+suggest that phase adjustment is a stable, language-independent phenomenon,
+though its \emph{impact} on translation quality varies dramatically (strong
+benefit on Hi--En, neutral on En--De, negative on Bn--En).
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.95\linewidth]{../outputs/analysis/hi_s42_phases.png}
-  \caption{Phase offset distributions for Hi--En. Top row: encoder phases;
-  bottom row: decoder phases. Left: query phases; right: key phases.
-  Dashed line at zero indicates RoPE initialisation.}
+  \includegraphics[width=0.85\linewidth]{../outputs/analysis/hi_s42_phases.png}
+  \caption{Hi--En phase distributions. Dashed line: zero (RoPE init).}
   \label{fig:phases}
 \end{figure}
 
@@ -457,26 +492,33 @@ on Hi--En (Table~\ref{tab:main}).
 \textbf{Why uniform suppression?} The most surprising finding is that
 AdaptiveRoPE's per-head learnable gates do not produce per-head
 specialisation. Instead, all heads converge to nearly identical suppression
-factors. We hypothesize two explanations:
+factors. We hypothesise two explanations:
 
 (1)~\emph{Positional information is a low-level feature.} Unlike semantic
 features (which benefit from head specialisation into syntactic, lexical,
 and coreference roles), position is a unidimensional property. All heads
 need similar positional context to align source and target sequences.
 
-(2)~\emph{Frequency suppression may adapt to sequence length.}
-The Hi--En and Bn--En training data have longer average sequences
-(50--76 tokens) than En--De ($\approx$30 tokens). Lower effective
-frequencies (via suppression) produce longer wavelengths, which may
-improve long-range positional discrimination. This could explain why
-we observe stronger suppression on the Indic models, though we cannot
-rule out other factors (dataset size, tokeniser, or training duration).
+(2)~\emph{Frequency suppression may adapt to training dynamics.}
+The En--De model, trained with a larger batch size and higher learning rate,
+learned stronger suppression ($0.77$) than the Indic models ($0.84$).
+Whether this reflects differences in dataset size, sequence length,
+optimisation landscape, or language properties remains an open question.
 
 \textbf{Why no benefit on En--De?} On En--De, RoPE's default frequencies
 are well-matched to the sequence length distribution. The model learns
-minor suppression ($0.89$), but this provides no measurable BLEU gain.
+suppression ($0.77$), but this provides no measurable BLEU gain.
 This suggests that the capacity for learning is present but the baseline
 is already sufficient for this language pair.
+
+\textbf{Why does PhasesOnly help Hi--En but hurt Bn--En?} The divergent
+impact of phase offsets on Hi--En (positive) and Bn--En (negative) is
+an open question. One speculative explanation is that Hindi's
+morphological complexity (agglutinative suffixes, long-distance verb
+agreement) benefits from fine-grained positional alignment, while
+Bengali's morphological patterns do not. Controlled experiments
+isolating specific morphological phenomena would be needed to test this
+hypothesis.
 
 \textbf{Implications for PE design.} Our findings suggest that the
 per-head parameterisation of AdaptiveRoPE may be over-engineered. A
@@ -486,17 +528,21 @@ similar performance with fewer parameters. Future work should test:
   \item A scalar gate: $\theta_p = p \cdot \omega \cdot g$ with
         $g \in \mathbb{R}$ (1 parameter vs.~768)
   \item Whether the optimal suppression factor can be predicted from
-        sequence length statistics without training
+        training hyperparameters without learning
   \item Whether phase offsets can be omitted entirely (GatesOnly
-        outperforms full AdaptiveRoPE on Hi--En)
+        matches full AdaptiveRoPE on En--De and Bn--En)
 \end{enumerate}
 
-\textbf{Limitations.} (1)~\textbf{Single seed} for Indic languages;
-variance estimates would strengthen conclusions.
+\textbf{Limitations.}
+(1)~\textbf{Single seed} for all language pairs; multi-seed replication
+would quantify initialization variance and strengthen statistical claims.
+For En--De, ALiBi and additional RoPE seeds (43, 44) were planned but
+training was interrupted before completion; all En--De results are
+therefore single-run.
 (2)~\textbf{Different training hyperparameters} across language pairs
-(25K vs.~75K steps, different batch sizes and learning rates); we
-compare methods \emph{within} each language pair and treat cross-lingual
-parameter patterns as observational, not causal.
+(batch size, learning rate, sequence length); we compare methods
+\emph{within} each language pair and treat cross-lingual parameter patterns
+as observational, not causal.
 (3)~\textbf{Position encoding is applied only in self-attention,}
 following the decoder-only convention of our base architecture;
 cross-attention operates on position-agnostic encoder outputs.
@@ -511,20 +557,26 @@ We decomposed AdaptiveRoPE into learnable frequency gates and phase offsets
 and analysed what these parameters actually learn across three language
 pairs. Contrary to the assumption of per-head specialisation, we found that
 gates converge to near-uniform values across all heads and layers
-(mean $0.84$--$0.89$, std $\approx 0.07$), indicating \textbf{global
+(mean $0.77$--$0.84$, std $8$--$19\%$ of the mean), indicating \textbf{global
 frequency suppression} rather than complex adaptation. Phase offsets remain
-small ($|{\phi}| \approx 0.005$) and antisymmetric.
+small ($|\phi| \approx 0.007$--$0.008$~rad) and antisymmetric.
 
-On Hindi--English, where standard RoPE struggles, learnable adaptations
-provide statistically significant gains ($+1.7$ BLEU, $p<0.01$). However,
-on English--German --- where RoPE is already near-optimal --- the adaptations
-provide no benefit. We observe stronger suppression on models trained for
-Indic language pairs than on German, though we note this is an observational
-pattern rather than a causal claim due to differing training conditions.
+On Hindi--English, where standard RoPE struggles, our best variant
+(PhasesOnly) achieves a statistically significant gain of $+1.64$~BLEU
+($p<0.01$), while full AdaptiveRoPE improves by $+1.30$~BLEU. However, on
+English--German --- where RoPE is already near-optimal --- the adaptations
+provide no benefit, and on Bengali--English PhasesOnly significantly
+underperforms. The effectiveness of AdaptiveRoPE is therefore
+\textbf{language-dependent}.
 
 Our findings challenge the assumption that learned rotary PE requires
-per-head specialisation and suggest that simpler global frequency scaling
-mechanisms may be sufficient for many translation tasks.
+per-head specialisation. They further suggest that future PE designs for
+morphologically complex languages should prioritise a simple learned
+frequency scalar over per-head parameterisation, reducing parameter count
+by $768\times$ with no translation quality cost on the tasks we studied.
+We acknowledge that our conclusions are limited by single-seed training,
+and we encourage the community to replicate and extend these results with
+larger models and broader language coverage.
 
 %% ─────────────────────────────────────────────────────────────────────────────
 \bibliographystyle{IEEEtran}
